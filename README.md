@@ -73,19 +73,31 @@ V, C, S, X = gsvd(A, B, compute_u=False)
 
 ### Generalized singular values only
 
-Set `compute_right=False` to skip computing `X` (or `Q` in `separate` mode).
-This avoids an O(p³) matrix accumulation step and can give a significant
-speedup when `p` is large:
+Use `gsvdvals` to get just the generalized cosine/sine pairs `(c, s)` without
+computing any singular vectors or the right factor `X`:
+
+```python
+from gsvd4py import gsvdvals
+
+c, s = gsvdvals(A, B)
+# c[i]**2 + s[i]**2 == 1; generalized singular values are c[i] / s[i]
+# c is non-increasing (equivalently, s is non-decreasing)
+```
+
+To retrieve the full diagonal matrices `C` and `S` alongside singular vectors,
+set `compute_right=False` on `gsvd`. This skips the O(p³) accumulation of `X`
+and can give a significant speedup when `p` is large:
 
 ```python
 U, V, C, S = gsvd(A, B, compute_right=False)
-C, S = gsvd(A, B, compute_u=False, compute_v=False, compute_right=False)
 
 # In separate mode, R is still returned; only Q is omitted:
 U, V, D1, D2, R, k, l = gsvd(A, B, mode='separate', compute_right=False)
 ```
 
 ## API Reference
+
+### `gsvd`
 
 ```python
 gsvd(a, b, mode='full', compute_u=True, compute_v=True, compute_right=True,
@@ -104,6 +116,22 @@ gsvd(a, b, mode='full', compute_u=True, compute_v=True, compute_right=True,
 | `overwrite_b` | Allow overwriting `b` to avoid a copy (default `False`) |
 | `lwork` | Work array size; `None` triggers an optimal workspace query |
 | `check_finite` | Check inputs for non-finite values (default `True`) |
+
+### `gsvdvals`
+
+```python
+gsvdvals(a, b, overwrite_a=False, overwrite_b=False, lwork=None, check_finite=True)
+```
+
+Returns `(c, s)` — 1D real arrays of length `q = k + l` (the numerical rank of
+`[a; b]`) containing the generalized cosines and sines in non-increasing /
+non-decreasing order respectively. Parameters have the same meaning as for
+`gsvd`.
+
+| Return value | Description |
+|---|---|
+| `c` | Generalized cosines, shape (q,), non-increasing. `c[i] == 1` ↔ infinite GSV; `c[i] == 0` ↔ zero GSV. |
+| `s` | Generalized sines, shape (q,), non-decreasing. `s[i] == 0` ↔ infinite GSV; `s[i] == 1` ↔ zero GSV. |
 
 Supported dtypes: `float32`, `float64`, `complex64`, `complex128`. Integer inputs are upcast to `float64`.
 

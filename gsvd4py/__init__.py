@@ -1,5 +1,5 @@
 """gsvd4py — Generalized SVD via LAPACK ?ggsvd3."""
 
-from ._gsvd import gsvd
+from ._gsvd import gsvd, gsvdvals
 
-__all__ = ['gsvd']
+__all__ = ['gsvd', 'gsvdvals']

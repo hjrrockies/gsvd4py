@@ -391,6 +391,53 @@ def gsvd(a, b, mode='full', compute_u=True, compute_v=True, compute_right=True,
             mode, compute_u, compute_v, compute_right,
         )
 
+def gsvdvals(a, b, overwrite_a=False, overwrite_b=False, lwork=None, check_finite=True):
+    """Generalized singular value pairs of the matrix pair (a, b).
+
+    Computes the generalized cosines ``c`` and sines ``s`` that satisfy
+    ``c[i]**2 + s[i]**2 = 1`` for the finite generalized singular values.
+    The generalized singular values themselves are the ratios ``c[i] / s[i]``.
+
+    Equivalent to calling ``gsvd(a, b, mode='econ', compute_u=False,
+    compute_v=False, compute_right=False)`` and extracting the diagonals of
+    the returned ``C`` and ``S`` matrices, but with a cleaner interface.
+
+    Parameters
+    ----------
+    a : (m, p) array_like
+        First input matrix.
+    b : (n, p) array_like
+        Second input matrix.
+    overwrite_a : bool, default False
+        Allow overwriting a (avoids a copy if True and a is already
+        Fortran-contiguous with the correct dtype).
+    overwrite_b : bool, default False
+        Allow overwriting b (same as overwrite_a).
+    lwork : int or None, default None
+        LAPACK work array size. None (or -1) triggers an optimal query.
+    check_finite : bool, default True
+        Check that a and b contain only finite values.
+
+    Returns
+    -------
+    c : ndarray, shape (q,)
+        Generalized cosines in non-increasing order, where ``q = k + l`` is
+        the numerical rank of ``[a; b]``. An entry equal to 1 indicates an
+        infinite generalized singular value; an entry equal to 0 indicates a
+        zero generalized singular value.
+    s : ndarray, shape (q,)
+        Generalized sines in non-decreasing order. An entry equal to 0
+        indicates an infinite generalized singular value; an entry equal to 1
+        indicates a zero generalized singular value.
+    """
+    # get singular value matrices only
+    C, S = gsvd(a, b, 'econ', False, False, False, overwrite_a,
+                overwrite_b, lwork, check_finite)
+
+    # one singular value pair per column of C, S
+    c, s = np.max(C, axis=0), np.max(S, axis=0)
+
+    return c, s
 
 # ---------------------------------------------------------------------------
 # Post-processing: separate mode
