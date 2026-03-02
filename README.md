@@ -71,6 +71,18 @@ U, C, S, X = gsvd(A, B, compute_v=False)
 V, C, S, X = gsvd(A, B, compute_u=False)
 ```
 
+### Skipping X (or Q in `mode='separate'`)
+To retrieve the full diagonal matrices `C` and `S` alongside singular vectors,
+set `compute_right=False` on `gsvd`. This skips the accumulation of `X`
+and can give a significant speedup when `p` is large:
+
+```python
+U, V, C, S = gsvd(A, B, compute_right=False)
+
+# In separate mode, R is still returned; only Q is omitted:
+U, V, D1, D2, R, k, l = gsvd(A, B, mode='separate', compute_right=False)
+```
+
 ### Generalized singular values only
 
 Use `gsvdvals` to get just the generalized cosine/sine pairs `(c, s)` without
@@ -82,17 +94,6 @@ from gsvd4py import gsvdvals
 c, s = gsvdvals(A, B)
 # c[i]**2 + s[i]**2 == 1; generalized singular values are c[i] / s[i]
 # c is non-increasing (equivalently, s is non-decreasing)
-```
-
-To retrieve the full diagonal matrices `C` and `S` alongside singular vectors,
-set `compute_right=False` on `gsvd`. This skips the O(p³) accumulation of `X`
-and can give a significant speedup when `p` is large:
-
-```python
-U, V, C, S = gsvd(A, B, compute_right=False)
-
-# In separate mode, R is still returned; only Q is omitted:
-U, V, D1, D2, R, k, l = gsvd(A, B, mode='separate', compute_right=False)
 ```
 
 ## API Reference
