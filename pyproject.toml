@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gsvd4py"
+version = "0.0.1"
+description = "Generalized SVD (GSVD) via LAPACK ?ggsvd3, using the same LAPACK library as SciPy"
+requires-python = ">=3.9"
+authors = [{name = "Hayden Ringer", email = "hjrrockies@gmail.com"}]
+dependencies = [
+    "scipy >= 1.13",
+    "numpy >= 2.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
