@@ -9,15 +9,15 @@
     - The "full Matlab-style" GSVD is $A = U C X^H, B = V S X^H$, where the matrices have the following properties (note that q = K+L, the numerical rank of the stacked matrices)
         - U is m-by-m unitary
         - V is n-by-n unitary
-        - C is m-by-q diagonal
-        - S is n-by-q diagonal
+        - C is m-by-q diagonal, with a non-increasing diagonal
+        - S is n-by-q diagonal, with a non-decreasing diagonal
         - X is p-by-q
     - The "economy Matlab-style" GSVD is also $A = U C X^H, B = V S X^H$, but U and V are truncated to at most p columns, and C and S are truncated to at most p rows
 
 # Module syntax
 - gsvd4py should export a single function `gsvd` which has the following syntax:
 ```python
-def gsvd(a, b, mode='full', compute_u=True, compute_v=True
+def gsvd(a, b, mode='full', compute_u=True, compute_v=True, compute_right=True,
          overwrite_a=False, overwrite_b=False, lwork=None, check_finite=True):
          # GSVD code
 ```
@@ -25,17 +25,20 @@ def gsvd(a, b, mode='full', compute_u=True, compute_v=True
 - if `mode='full'`, it returns the full Matlab-style GSVD (with numerical rank truncation)
 - if `mode='econ'`, it returns the economy Matlab-style GSVD (with numerical rank truncation)
 - if `mode='separate'`, it returns the LAPACK GSVD (without numerical rank truncation)
-- see the following examples for calling `gsvd`:
-```python
-U, V, X, C, S = gsvd(A, B)
-U, V, X, C, S = gsvd(A, B, mode='econ')
-X, C, S = gsvd(A, B, compute_u=False, compute_v=False)
-U, V, D1, D2, R, Q, k, l = gsvd(A, B, mode='separate')
-```
 - `compute_u` and `compute_v` control whether or not to compute the left singular vectors
+- `compute_right` controls whether or not to return the right singular vector matrix X in the mode='full' and mode='econ' cases, and whether or not to return Q in the mode=`separate` case
 - `overwrite_a` and `overwrite_b` allow for a slight performance speedup when set to `True`
 - `lwork` controls the work array size, and is computed optimally if `lwork=None` or `lwork=-1`
 - `check_finite=False` allows the user to gain a slight performance boost by skipping the checks to see if `a` and `b` contain only finite values
+- see the following examples for calling `gsvd`:
+```python
+U, V, C, S, X = gsvd(A, B)
+U, V, C, S, X = gsvd(A, B, mode='econ')
+C, S, X = gsvd(A, B, compute_u=False, compute_v=False)
+U, V, C, S = gsvd(A, B, compute_right=False)
+U, V, D1, D2, R, Q, k, l = gsvd(A, B, mode='separate')
+U, V, D1, D2, R, k, l = gsvd(A, B, mode='separate', compute_right=False)
+```
 
 # Build requirements
 - The module should mirror SciPy/NumPy behavior (as of SciPy 1.17) in linking to a LAPACK installation. 

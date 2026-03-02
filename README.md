@@ -23,7 +23,7 @@ B = V @ S @ X.conj().T
 
 where:
 - `U` (m×m) and `V` (n×n) are unitary
-- `C` (m×q) and `S` (n×q) are real diagonal with `C.T @ C + S.T @ S = I`
+- `C` (m×q) and `S` (n×q) are real diagonal, with the diagonal of `C` in descending order and `C.T @ C + S.T @ S = I`
 - `X` (p×q) is nonsingular
 - `q = k + l` is the numerical rank of the stacked matrix `[A; B]`
 
@@ -42,8 +42,9 @@ B = np.random.randn(4, 6)
 ### Full GSVD (default)
 
 ```python
-U, V, X, C, S = gsvd(A, B)
-# U: (5,5), V: (4,4), X: (6,q), C: (5,q), S: (4,q)
+U, V, C, S, X = gsvd(A, B)
+# U: (5,5), V: (4,4), C: (5,q), S: (4,q), X: (6,q)
+# diagonal of C is in descending order
 ```
 
 ### Economy GSVD
@@ -51,7 +52,7 @@ U, V, X, C, S = gsvd(A, B)
 Truncates `U` and `V` to at most `q` columns:
 
 ```python
-U, V, X, C, S = gsvd(A, B, mode='econ')
+U, V, C, S, X = gsvd(A, B, mode='econ')
 ```
 
 ### Raw LAPACK output
@@ -65,15 +66,29 @@ U, V, D1, D2, R, Q, k, l = gsvd(A, B, mode='separate')
 ### Skipping U and/or V
 
 ```python
-X, C, S = gsvd(A, B, compute_u=False, compute_v=False)
-U, X, C, S = gsvd(A, B, compute_v=False)
-V, X, C, S = gsvd(A, B, compute_u=False)
+C, S, X = gsvd(A, B, compute_u=False, compute_v=False)
+U, C, S, X = gsvd(A, B, compute_v=False)
+V, C, S, X = gsvd(A, B, compute_u=False)
+```
+
+### Generalized singular values only
+
+Set `compute_right=False` to skip computing `X` (or `Q` in `separate` mode).
+This avoids an O(p³) matrix accumulation step and can give a significant
+speedup when `p` is large:
+
+```python
+U, V, C, S = gsvd(A, B, compute_right=False)
+C, S = gsvd(A, B, compute_u=False, compute_v=False, compute_right=False)
+
+# In separate mode, R is still returned; only Q is omitted:
+U, V, D1, D2, R, k, l = gsvd(A, B, mode='separate', compute_right=False)
 ```
 
 ## API Reference
 
 ```python
-gsvd(a, b, mode='full', compute_u=True, compute_v=True,
+gsvd(a, b, mode='full', compute_u=True, compute_v=True, compute_right=True,
      overwrite_a=False, overwrite_b=False, lwork=None, check_finite=True)
 ```
 
@@ -84,6 +99,7 @@ gsvd(a, b, mode='full', compute_u=True, compute_v=True,
 | `mode` | `'full'` (default), `'econ'`, or `'separate'` |
 | `compute_u` | Compute left singular vectors of `a` (default `True`) |
 | `compute_v` | Compute left singular vectors of `b` (default `True`) |
+| `compute_right` | Compute `X` (or `Q` in `separate` mode); set `False` to skip the O(p³) accumulation (default `True`) |
 | `overwrite_a` | Allow overwriting `a` to avoid a copy (default `False`) |
 | `overwrite_b` | Allow overwriting `b` to avoid a copy (default `False`) |
 | `lwork` | Work array size; `None` triggers an optimal workspace query |

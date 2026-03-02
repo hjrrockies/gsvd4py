@@ -98,7 +98,7 @@ def _iptr(val):
 # ---------------------------------------------------------------------------
 
 def _call_ggsvd3(a_f, b_f, alpha, beta, u_f, v_f, q_f, iwork,
-                 jobu, jobv, lwork, fn, is_complex, real_dtype,
+                 jobu, jobv, jobq, lwork, fn, is_complex, real_dtype,
                  uses_hidden_lengths):
     """Call ?ggsvd3 once (workspace query or actual computation).
 
@@ -107,7 +107,6 @@ def _call_ggsvd3(a_f, b_f, alpha, beta, u_f, v_f, q_f, iwork,
     """
     m_lap, p_lap = a_f.shape   # LAPACK M, N
     n_lap        = b_f.shape[0]  # LAPACK P
-    q_lap        = p_lap         # = LAPACK N, used for LDQ
 
     lwork_val = lwork if lwork is not None else 1
     work = np.zeros(max(1, lwork_val), dtype=a_f.dtype)
@@ -117,18 +116,20 @@ def _call_ggsvd3(a_f, b_f, alpha, beta, u_f, v_f, q_f, iwork,
     l_c    = ctypes.c_int(0)
     info_c = ctypes.c_int(0)
 
-    # Dummy 1×1 arrays for when U or V is not computed
+    # Dummy 1×1 arrays for when U, V, or Q is not computed
     dummy = np.zeros((1, 1), dtype=a_f.dtype, order='F')
 
     u_ptr   = _ptr(u_f)   if u_f is not None else _ptr(dummy)
     v_ptr   = _ptr(v_f)   if v_f is not None else _ptr(dummy)
+    q_ptr   = _ptr(q_f)   if q_f is not None else _ptr(dummy)
     ldu_val = m_lap        if u_f is not None else 1
     ldv_val = n_lap        if v_f is not None else 1
+    ldq_val = p_lap        if q_f is not None else 1
 
-    # jobu / jobv chars (single byte)
+    # jobu / jobv / jobq chars (single byte)
     jobu_b = jobu.encode()
     jobv_b = jobv.encode()
-    jobq_b = b'Q'
+    jobq_b = jobq.encode()
 
     args = [
         jobu_b, jobv_b, jobq_b,
@@ -139,7 +140,7 @@ def _call_ggsvd3(a_f, b_f, alpha, beta, u_f, v_f, q_f, iwork,
         _ptr(alpha), _ptr(beta),
         u_ptr,       _iptr(ldu_val),
         v_ptr,       _iptr(ldv_val),
-        _ptr(q_f),   _iptr(q_lap),
+        q_ptr,       _iptr(ldq_val),
         _ptr(work),  ctypes.byref(lwork_c),
     ]
 
@@ -225,7 +226,7 @@ def _extract_R(a_f, b_f, m, n, p, k, l):
 # Public API
 # ---------------------------------------------------------------------------
 
-def gsvd(a, b, mode='full', compute_u=True, compute_v=True,
+def gsvd(a, b, mode='full', compute_u=True, compute_v=True, compute_right=True,
          overwrite_a=False, overwrite_b=False, lwork=None, check_finite=True):
     """Generalized Singular Value Decomposition.
 
@@ -237,16 +238,21 @@ def gsvd(a, b, mode='full', compute_u=True, compute_v=True,
     a : (m, p) array_like
     b : (n, p) array_like
     mode : {'full', 'econ', 'separate'}, default 'full'
-        'full'     — Full Matlab-style: U (m×m), V (n×n), X (p×q), C (m×q),
-                     S (n×q), where q = k+l is the numerical rank of [a; b].
+        'full'     — Full Matlab-style: U (m×m), V (n×n), C (m×q), S (n×q),
+                     X (p×q), where q = k+l is the numerical rank of [a; b].
         'econ'     — Economy Matlab-style: U (m×min(m,q)), V (n×min(n,q)),
-                     X (p×q), C (min(m,q)×q), S (min(n,q)×q).
+                     C (min(m,q)×q), S (min(n,q)×q), X (p×q).
         'separate' — Raw LAPACK output (no rank truncation): U, V, D1, D2,
                      R, Q, k, l.
     compute_u : bool, default True
         Compute left singular vectors of a.
     compute_v : bool, default True
         Compute left singular vectors of b.
+    compute_right : bool, default True
+        Compute the right factor. In 'full'/'econ' mode this is X; in
+        'separate' mode this is Q. Setting False sets JOBQ='N' in LAPACK,
+        saving an O(p³) accumulation step (significant when p is large).
+        R is still returned in 'separate' mode regardless.
     overwrite_a : bool, default False
         Allow overwriting a (avoids a copy if True and a is already
         Fortran-contiguous with the correct dtype).
@@ -260,16 +266,17 @@ def gsvd(a, b, mode='full', compute_u=True, compute_v=True,
     Returns
     -------
     mode='full' or 'econ':
-        If compute_u and compute_v:     U, V, X, C, S
-        If compute_u and not compute_v: U, X, C, S
-        If not compute_u and compute_v: V, X, C, S
-        If not compute_u and compute_v: X, C, S
+        C diagonal is in descending order (scipy convention).
+        If compute_u and compute_v and compute_right:         U, V, C, S, X
+        If compute_u and compute_v and not compute_right:     U, V, C, S
+        (other combinations omit U and/or V from the front, and omit X
+        from the end when compute_right=False)
 
     mode='separate':
-        If compute_u and compute_v:     U, V, D1, D2, R, Q, k, l
-        If compute_u and not compute_v: U, D1, D2, R, Q, k, l
-        If not compute_u and compute_v: V, D1, D2, R, Q, k, l
-        If not compute_u and compute_v: D1, D2, R, Q, k, l
+        If compute_u and compute_v and compute_right:         U, V, D1, D2, R, Q, k, l
+        If compute_u and compute_v and not compute_right:     U, V, D1, D2, R, k, l
+        (other combinations omit U and/or V from the front, and omit Q
+        from the end when compute_right=False)
     """
     # ------------------------------------------------------------------
     # Input validation
@@ -326,11 +333,12 @@ def gsvd(a, b, mode='full', compute_u=True, compute_v=True,
     # ------------------------------------------------------------------
     jobu_char = 'U' if compute_u else 'N'
     jobv_char = 'V' if compute_v else 'N'
+    jobq_char = 'Q' if compute_right else 'N'
 
     alpha  = np.zeros(p, dtype=real_dtype)
     beta   = np.zeros(p, dtype=real_dtype)
     iwork  = np.zeros(p, dtype=np.int32)
-    q_f    = np.zeros((p, p), dtype=dtype, order='F')
+    q_f    = np.zeros((p, p), dtype=dtype, order='F') if compute_right else None
     u_f    = np.zeros((m, m), dtype=dtype, order='F') if compute_u else None
     v_f    = np.zeros((n, n), dtype=dtype, order='F') if compute_v else None
 
@@ -340,7 +348,7 @@ def gsvd(a, b, mode='full', compute_u=True, compute_v=True,
     if lwork is None or lwork == -1:
         opt = _call_ggsvd3(
             a_f, b_f, alpha, beta, u_f, v_f, q_f, iwork,
-            jobu_char, jobv_char,
+            jobu_char, jobv_char, jobq_char,
             lwork=None, fn=fn, is_complex=is_complex,
             real_dtype=real_dtype, uses_hidden_lengths=uses_hidden_lengths,
         )
@@ -353,7 +361,7 @@ def gsvd(a, b, mode='full', compute_u=True, compute_v=True,
     # ------------------------------------------------------------------
     k, l, info = _call_ggsvd3(
         a_f, b_f, alpha, beta, u_f, v_f, q_f, iwork,
-        jobu_char, jobv_char,
+        jobu_char, jobv_char, jobq_char,
         lwork=lwork_use, fn=fn, is_complex=is_complex,
         real_dtype=real_dtype, uses_hidden_lengths=uses_hidden_lengths,
     )
@@ -374,13 +382,13 @@ def gsvd(a, b, mode='full', compute_u=True, compute_v=True,
         return _build_separate(
             a_f, b_f, alpha, beta, u_f, v_f, q_f, iwork,
             m, n, p, k, l, q_rank,
-            compute_u, compute_v, real_dtype,
+            compute_u, compute_v, compute_right, real_dtype,
         )
     else:
         return _build_matlab_style(
             a_f, b_f, alpha, beta, u_f, v_f, q_f,
             m, n, p, k, l, q_rank,
-            mode, compute_u, compute_v,
+            mode, compute_u, compute_v, compute_right,
         )
 
 
@@ -390,7 +398,7 @@ def gsvd(a, b, mode='full', compute_u=True, compute_v=True,
 
 def _build_separate(a_f, b_f, alpha, beta, u_f, v_f, q_f, iwork,
                     m, n, p, k, l, q_rank,
-                    compute_u, compute_v, real_dtype):
+                    compute_u, compute_v, compute_right, real_dtype):
     R = _extract_R(a_f, b_f, m, n, p, k, l)
     D1, D2 = _build_C_S(alpha, beta, m, n, k, l)
 
@@ -398,14 +406,16 @@ def _build_separate(a_f, b_f, alpha, beta, u_f, v_f, q_f, iwork,
     R  = np.ascontiguousarray(R)
     D1 = np.ascontiguousarray(D1)
     D2 = np.ascontiguousarray(D2)
-    Q  = np.ascontiguousarray(q_f)
 
     result = []
     if compute_u:
         result.append(np.ascontiguousarray(u_f))
     if compute_v:
         result.append(np.ascontiguousarray(v_f))
-    result += [D1, D2, R, Q, k, l]
+    result += [D1, D2, R]
+    if compute_right:
+        result.append(np.ascontiguousarray(q_f))
+    result += [k, l]
     return tuple(result)
 
 
@@ -413,23 +423,74 @@ def _build_separate(a_f, b_f, alpha, beta, u_f, v_f, q_f, iwork,
 # Post-processing: full / econ modes
 # ---------------------------------------------------------------------------
 
+def _sort_gsvd_outputs(C, S, X, U, V, k, m, n, compute_u, compute_v):
+    """Sort the finite GSV block so the diagonal of C is in descending order.
+
+    Only columns k..k+finite_len-1 are permuted (the finite cosine block).
+    The k infinite-GSV columns (c=1) stay first; the zero-c columns stay last.
+    Corresponding rows/columns of U and V are permuted to preserve A=UCX^H
+    and B=VSX^H.
+    """
+    q = C.shape[1]
+    finite_len = min(m, q) - k
+    if finite_len <= 1:
+        return C, S, X, U, V
+
+    c_finite = np.array([C[k + i, k + i] for i in range(finite_len)])
+    perm = np.argsort(-c_finite, kind='stable')
+    if np.all(perm == np.arange(finite_len)):
+        return C, S, X, U, V
+
+    # Permute finite block columns of X (if X was computed)
+    if X is not None:
+        X = np.array(X)
+        X[:, k:k + finite_len] = X[:, k:k + finite_len][:, perm]
+
+    # Update C diagonal in the finite block
+    C = np.array(C)
+    c_new = c_finite[perm]
+    for i in range(finite_len):
+        C[k + i, k + i] = c_new[i]
+
+    # Update S finite block (rows 0..finite_len-1, cols k..k+finite_len-1)
+    # S[i, k+i] = beta[k+i] for i in 0..finite_len-1
+    s_finite = np.array([S[i, k + i] for i in range(finite_len)])
+    S = np.array(S)
+    S[:finite_len, k:k + finite_len] = 0
+    s_new = s_finite[perm]
+    for i in range(finite_len):
+        S[i, k + i] = s_new[i]
+
+    # Permute U columns k..k+finite_len-1
+    if compute_u and U is not None:
+        ue = min(k + finite_len, U.shape[1])
+        if ue > k:
+            blen = ue - k
+            U = np.array(U)
+            U[:, k:ue] = U[:, k:ue][:, perm[:blen]]
+
+    # Permute V columns 0..finite_len-1 (correspond to S rows 0..finite_len-1)
+    if compute_v and V is not None:
+        ve = min(finite_len, V.shape[1])
+        if ve > 0:
+            V = np.array(V)
+            V[:, :ve] = V[:, :ve][:, perm[:ve]]
+
+    return C, S, X, U, V
+
+
 def _build_matlab_style(a_f, b_f, alpha, beta, u_f, v_f, q_f,
                         m, n, p, k, l, q_rank,
-                        mode, compute_u, compute_v):
+                        mode, compute_u, compute_v, compute_right):
     # Build C and S (real-valued diagonal matrices)
     C_full, S_full = _build_C_S(alpha, beta, m, n, k, l)
-
-    # Extract R then build X = Q2 @ conj(R).T
-    R   = _extract_R(a_f, b_f, m, n, p, k, l)
-    Q2  = np.asarray(q_f)[:, p - q_rank:]    # p×q_rank
-    X   = Q2 @ np.conj(R).T                  # p×q_rank
 
     # Full mode: U is m×m, V is n×n, C is m×q, S is n×q
     # Econ mode: truncate U to m×r, V to n×r, C to r×q, S to r×q
     #   where r = min(m, q_rank) for U/C  and  min(n, q_rank) for V/S
     if mode == 'full':
-        C = C_full
-        S = S_full
+        C = np.ascontiguousarray(C_full)
+        S = np.ascontiguousarray(S_full)
         U_out = np.ascontiguousarray(u_f) if compute_u else None
         V_out = np.ascontiguousarray(v_f) if compute_v else None
     else:  # 'econ'
@@ -440,14 +501,25 @@ def _build_matlab_style(a_f, b_f, alpha, beta, u_f, v_f, q_f,
         U_out = np.ascontiguousarray(u_f[:, :ru]) if compute_u else None
         V_out = np.ascontiguousarray(v_f[:, :rv]) if compute_v else None
 
-    X = np.ascontiguousarray(X)
-    C = np.ascontiguousarray(C)
-    S = np.ascontiguousarray(S)
+    # Build X = Q2 @ conj(R).T only when compute_right=True
+    if compute_right:
+        R  = _extract_R(a_f, b_f, m, n, p, k, l)
+        Q2 = np.asarray(q_f)[:, p - q_rank:]    # p×q_rank
+        X  = np.ascontiguousarray(Q2 @ np.conj(R).T)
+    else:
+        X = None
+
+    # Sort finite GSV block so diagonal of C is in descending order
+    C, S, X, U_out, V_out = _sort_gsvd_outputs(
+        C, S, X, U_out, V_out, k, m, n, compute_u, compute_v
+    )
 
     result = []
     if compute_u:
         result.append(U_out)
     if compute_v:
         result.append(V_out)
-    result += [X, C, S]
+    result += [C, S]
+    if compute_right:
+        result.append(X)
     return tuple(result)

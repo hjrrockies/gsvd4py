@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gsvd4py"
-version = "0.1.0"
+version = "0.1.2"
 description = "Generalized SVD (GSVD) via LAPACK ?ggsvd3"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -13,6 +13,11 @@ dependencies = [
     "scipy >= 1.13",
     "numpy >= 2.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/hjrrockies/gsvd4py"
+"Source Code" = "https://github.com/hjrrockies/gsvd4py"
+"Issue Tracker" = "https://github.com/hjrrockies/gsvd4py/issues"
 
 [project.optional-dependencies]
 test = ["pytest"]

@@ -57,7 +57,7 @@ def _random_matrix(rng, m, n, dtype):
     return rng.standard_normal((m, n)).astype(dtype)
 
 
-def _check_reconstruction(U, V, X, C, S, A, B, rtol):
+def _check_reconstruction(U, V, C, S, X, A, B, rtol):
     """Check A ≈ U @ C @ X.conj().T and B ≈ V @ S @ X.conj().T."""
     XH = X.conj().T
     assert_allclose(U @ C @ XH, A, rtol=rtol, atol=rtol * np.linalg.norm(A))
@@ -90,7 +90,7 @@ class TestFullMode:
         B = _random_matrix(rng, n, p, dtype)
         rtol = _RTOL[dtype]
 
-        U, V, X, C, S = gsvd(A, B, mode='full')
+        U, V, C, S, X = gsvd(A, B, mode='full')
 
         assert U.shape == (m, m)
         assert V.shape == (n, n)
@@ -99,7 +99,7 @@ class TestFullMode:
         assert S.shape[0] == n
         assert C.shape[1] == X.shape[1] == S.shape[1]  # same q
 
-        _check_reconstruction(U, V, X, C, S, A, B, rtol)
+        _check_reconstruction(U, V, C, S, X, A, B, rtol)
         _check_unitary(U, rtol)
         _check_unitary(V, rtol)
 
@@ -109,7 +109,7 @@ class TestFullMode:
         B = rng.standard_normal((3, 5))
         result = gsvd(A, B, compute_u=False, compute_v=False)
         assert len(result) == 3
-        X, C, S = result
+        C, S, X = result
         assert X.shape[0] == 5
 
     def test_no_u_with_v(self):
@@ -118,7 +118,7 @@ class TestFullMode:
         B = rng.standard_normal((3, 5))
         result = gsvd(A, B, compute_u=False, compute_v=True)
         assert len(result) == 4
-        V, X, C, S = result
+        V, C, S, X = result
         assert V.shape == (3, 3)
 
     def test_with_u_no_v(self):
@@ -127,8 +127,50 @@ class TestFullMode:
         B = rng.standard_normal((3, 5))
         result = gsvd(A, B, compute_u=True, compute_v=False)
         assert len(result) == 4
-        U, X, C, S = result
+        U, C, S, X = result
         assert U.shape == (4, 4)
+
+    def test_c_diagonal_descending(self):
+        """Diagonal of C must be in non-increasing order."""
+        rng = np.random.default_rng(42)
+        A = rng.standard_normal((5, 6))
+        B = rng.standard_normal((4, 6))
+        U, V, C, S, X = gsvd(A, B)
+        q = C.shape[1]
+        c_diag = np.array([C[j, j] for j in range(min(A.shape[0], q))])
+        assert np.all(c_diag[:-1] >= c_diag[1:] - 1e-14), \
+            f"C diagonal not descending: {c_diag}"
+
+    def test_compute_right_false_full(self):
+        """compute_right=False drops X from the return tuple."""
+        rng = np.random.default_rng(5)
+        A = rng.standard_normal((4, 5))
+        B = rng.standard_normal((3, 5))
+        result = gsvd(A, B, compute_right=False)
+        assert len(result) == 4
+        U, V, C, S = result
+        assert U.shape == (4, 4)
+        assert V.shape == (3, 3)
+
+    def test_compute_right_false_no_uv(self):
+        """compute_right=False with no U/V returns only (C, S)."""
+        rng = np.random.default_rng(6)
+        A = rng.standard_normal((4, 5))
+        B = rng.standard_normal((3, 5))
+        result = gsvd(A, B, compute_u=False, compute_v=False, compute_right=False)
+        assert len(result) == 2
+        C, S = result
+        assert C.shape[0] == 4   # m rows
+
+    def test_compute_right_false_matches_full(self):
+        """C and S from compute_right=False match those from a full call."""
+        rng = np.random.default_rng(7)
+        A = rng.standard_normal((5, 6))
+        B = rng.standard_normal((4, 6))
+        U, V, C_full, S_full, X = gsvd(A, B)
+        U2, V2, C_nr, S_nr = gsvd(A, B, compute_right=False)
+        assert_allclose(C_nr, C_full, rtol=1e-12)
+        assert_allclose(S_nr, S_full, rtol=1e-12)
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +186,7 @@ class TestEconMode:
         B = _random_matrix(rng, n, p, dtype)
         rtol = _RTOL[dtype]
 
-        U, V, X, C, S = gsvd(A, B, mode='econ')
+        U, V, C, S, X = gsvd(A, B, mode='econ')
         q = X.shape[1]
 
         assert U.shape == (m, min(m, q))
@@ -152,14 +194,14 @@ class TestEconMode:
         assert C.shape == (min(m, q), q)
         assert S.shape == (min(n, q), q)
 
-        _check_reconstruction(U, V, X, C, S, A, B, rtol)
+        _check_reconstruction(U, V, C, S, X, A, B, rtol)
 
     def test_econ_smaller_than_full(self):
         rng = np.random.default_rng(3)
         A = rng.standard_normal((8, 5))
         B = rng.standard_normal((6, 5))
-        U_f, V_f, X_f, C_f, S_f = gsvd(A, B, mode='full')
-        U_e, V_e, X_e, C_e, S_e = gsvd(A, B, mode='econ')
+        U_f, V_f, C_f, S_f, X_f = gsvd(A, B, mode='full')
+        U_e, V_e, C_e, S_e, X_e = gsvd(A, B, mode='econ')
         q = X_e.shape[1]
         # Economy U/V should be the first q columns of the full U/V
         assert U_e.shape[1] <= U_f.shape[1]
@@ -202,6 +244,26 @@ class TestSeparateMode:
         assert len(result) == 6
         D1, D2, R, Q, k, l = result
 
+    def test_compute_right_false_drops_q(self):
+        """compute_right=False drops Q; R is still returned."""
+        rng = np.random.default_rng(14)
+        A = rng.standard_normal((5, 6))
+        B = rng.standard_normal((4, 6))
+        result = gsvd(A, B, mode='separate', compute_right=False)
+        assert len(result) == 7          # U, V, D1, D2, R, k, l  (no Q)
+        U, V, D1, D2, R, k, l = result
+        assert R.shape == (k + l, k + l)
+
+    def test_compute_right_false_r_matches(self):
+        """R from compute_right=False matches R from a full separate call."""
+        rng = np.random.default_rng(15)
+        A = rng.standard_normal((5, 6))
+        B = rng.standard_normal((4, 6))
+        U, V, D1, D2, R_full, Q, k, l = gsvd(A, B, mode='separate')
+        U2, V2, D1_2, D2_2, R_nr, k2, l2 = gsvd(A, B, mode='separate',
+                                                  compute_right=False)
+        assert_allclose(R_nr, R_full, rtol=1e-12)
+
     def test_reconstruction_via_lapack_form(self):
         """Verify A ≈ U @ D1 @ np.hstack([zeros, R]) @ Q.T."""
         rng = np.random.default_rng(20)
@@ -236,8 +298,8 @@ class TestOptions:
         rng = np.random.default_rng(100)
         A = rng.standard_normal((4, 5))
         B = rng.standard_normal((3, 5))
-        U1, V1, X1, C1, S1 = gsvd(A, B)
-        U2, V2, X2, C2, S2 = gsvd(A, B, lwork=500)
+        U1, V1, C1, S1, X1 = gsvd(A, B)
+        U2, V2, C2, S2, X2 = gsvd(A, B, lwork=500)
         assert_allclose(C1, C2, rtol=1e-12)
 
     def test_check_finite_raises(self):
@@ -280,7 +342,7 @@ class TestValidation:
         A = np.array([[1, 2, 3], [4, 5, 6]])
         B = np.array([[1, 2, 3]])
         # Should not raise; integers are upcast to float64
-        U, V, X, C, S = gsvd(A, B)
+        U, V, C, S, X = gsvd(A, B)
         assert U.dtype in (np.float64, np.complex128)
 
 
@@ -295,7 +357,7 @@ class TestDtypes:
         rng = np.random.default_rng(55)
         A = _random_matrix(rng, 4, 5, dtype)
         B = _random_matrix(rng, 3, 5, dtype)
-        U, V, X, C, S = gsvd(A, B)
+        U, V, C, S, X = gsvd(A, B)
         assert U.dtype == dtype
         assert V.dtype == dtype
         assert X.dtype == dtype
@@ -304,5 +366,5 @@ class TestDtypes:
         rng = np.random.default_rng(56)
         A = rng.standard_normal((4, 5)).astype(np.float32)
         B = rng.standard_normal((3, 5)).astype(np.float64)
-        U, V, X, C, S = gsvd(A, B)
+        U, V, C, S, X = gsvd(A, B)
         assert U.dtype == np.float64   # result_type promotes to float64
