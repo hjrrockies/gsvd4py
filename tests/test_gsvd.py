@@ -9,13 +9,16 @@ Validates:
   - All four dtypes (float32, float64, complex64, complex128)
   - compute_u=False / compute_v=False short-tuple returns
   - Various shapes (square, tall, wide, rank-deficient)
+  - Large matrices (p ~ 100)
+  - Rank-deficient pairs (q < p, A individually rank-deficient)
+  - Pairs with infinite generalized singular values (k > 0)
 """
 
 import numpy as np
 import pytest
 from numpy.testing import assert_allclose
 
-from gsvd4py import gsvd
+from gsvd4py import gsvd, gsvdvals
 import gsvd4py._lapack as _lapack_mod
 
 
@@ -171,6 +174,75 @@ class TestFullMode:
         U2, V2, C_nr, S_nr = gsvd(A, B, compute_right=False)
         assert_allclose(C_nr, C_full, rtol=1e-12)
         assert_allclose(S_nr, S_full, rtol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Test: sorting of C and S diagonals
+# ---------------------------------------------------------------------------
+
+class TestSorting:
+    """Verify that the diagonal of C is non-increasing and the corresponding
+    entries of S are non-decreasing, across modes and edge cases."""
+
+    @staticmethod
+    def _extract_cs(C, S):
+        """Column-wise max gives the GSV pairs (same convention as gsvdvals)."""
+        return np.max(C, axis=0), np.max(S, axis=0)
+
+    @pytest.mark.parametrize("mode", ['full', 'econ'])
+    @pytest.mark.parametrize("shape", [
+        (5, 4, 6),   # generic
+        (4, 4, 4),   # square
+        (3, 5, 6),   # m < p
+        (6, 3, 4),   # m > p, n < p
+        (2, 4, 4),   # m < n = p  (likely m < q, triggers identity block in S)
+    ])
+    def test_cs_sorted(self, shape, mode):
+        """C diagonal non-increasing; S finite block non-decreasing."""
+        m, n, p = shape
+        rng = np.random.default_rng(42)
+        A = rng.standard_normal((m, p))
+        B = rng.standard_normal((n, p))
+
+        C, S, X = gsvd(A, B, mode=mode, compute_u=False, compute_v=False)
+        c, s = self._extract_cs(C, S)
+
+        assert np.all(c[:-1] >= c[1:]), \
+            f"C not non-increasing ({mode} {shape}): {c}"
+        assert np.all(s[:-1] <= s[1:]), \
+            f"S not non-decreasing ({mode} {shape}): {s}"
+
+    def test_k_gt_0(self):
+        """When k > 0 (infinite GSVs), ones in C come first; finite block sorted."""
+        # B = [1, 0, 0] has null space span{e2, e3}; for generic A with 3 columns
+        # both null-space directions are in col(A), so k = 2, l = 1.
+        rng = np.random.default_rng(77)
+        A = rng.standard_normal((3, 3))
+        B = np.array([[1.0, 0.0, 0.0]])
+
+        U, V, C, S, X = gsvd(A, B)
+        c, s = self._extract_cs(C, S)
+
+        k = int(np.sum(np.isclose(c, 1.0)))
+        assert k >= 1, f"Expected k >= 1 (B has 2-D null space), got k={k}"
+        assert np.all(c[:-1] >= c[1:]), f"C not non-increasing: {c}"
+        assert np.all(s[:-1] <= s[1:]), f"S not non-decreasing: {s}"
+
+    def test_m_lt_q(self):
+        """When m < q, the identity block (s=1) in S follows the sorted finite block."""
+        # A is 2×4, B is 4×4 full-rank → k=0, q=4, m=2 < q.
+        # S should be [sin_asc, 1, 1] and C should be [cos_desc, 0, 0].
+        rng = np.random.default_rng(88)
+        A = rng.standard_normal((2, 4))
+        B = rng.standard_normal((4, 4))
+
+        U, V, C, S, X = gsvd(A, B)
+        q = C.shape[1]
+        assert A.shape[0] < q, "Test setup failed: expected m < q"
+
+        c, s = self._extract_cs(C, S)
+        assert np.all(c[:-1] >= c[1:]), f"C not non-increasing (m<q): {c}"
+        assert np.all(s[:-1] <= s[1:]), f"S not non-decreasing (m<q): {s}"
 
 
 # ---------------------------------------------------------------------------
@@ -368,3 +440,117 @@ class TestDtypes:
         B = rng.standard_normal((3, 5)).astype(np.float64)
         U, V, C, S, X = gsvd(A, B)
         assert U.dtype == np.float64   # result_type promotes to float64
+
+
+# ---------------------------------------------------------------------------
+# Test: large matrices
+# ---------------------------------------------------------------------------
+
+class TestLargeMatrices:
+    def test_reconstruction_large(self):
+        """Reconstruction holds for large matrices (p=100)."""
+        rng = np.random.default_rng(42)
+        m, n, p = 200, 150, 100
+        A = rng.standard_normal((m, p))
+        B = rng.standard_normal((n, p))
+        U, V, C, S, X = gsvd(A, B)
+        _check_reconstruction(U, V, C, S, X, A, B, rtol=1e-10)
+
+    def test_sorting_large(self):
+        """c non-increasing and s non-decreasing when m, n >> p.
+
+        Regression test for the lexsort tie-breaking fix: with m, n >> p,
+        LAPACK sets several alpha values to exactly 1.0 while others are
+        very close but not exactly 1.0.  A naive stable argsort of -c leaves
+        the corresponding s values unsorted within the exact-1.0 tied group.
+        """
+        rng = np.random.default_rng(43)
+        m, n, p = 200, 150, 20   # m, n >> p: many cosines cluster near 1
+        A = rng.standard_normal((m, p))
+        B = rng.standard_normal((n, p))
+        c, s = gsvdvals(A, B)
+        assert np.all(c[:-1] >= c[1:]), f"c not non-increasing: {c}"
+        assert np.all(s[:-1] <= s[1:]), f"s not non-decreasing: {s}"
+
+
+# ---------------------------------------------------------------------------
+# Test: rank-deficient matrix pairs
+# ---------------------------------------------------------------------------
+
+class TestRankDeficient:
+    def test_stacked_rank_deficient(self):
+        """When [A;B] has numerical rank r < p, q = k+l = r and A = UCX^H."""
+        rng = np.random.default_rng(42)
+        m, n, p, r = 8, 6, 10, 4
+        # Force A and B into the same r-dimensional column space so that
+        # [A; B] has rank r and the GSVD numerical rank q = r.
+        V, _ = np.linalg.qr(rng.standard_normal((p, p)))
+        V = V[:, :r]                               # p×r, orthonormal
+        A = rng.standard_normal((m, r)) @ V.T      # m×p, rank r
+        B = rng.standard_normal((n, r)) @ V.T      # n×p, rank r
+
+        U, V_out, C, S, X = gsvd(A, B)
+        q = C.shape[1]
+        assert q == r, f"Expected numerical rank q={r}, got q={q}"
+        _check_reconstruction(U, V_out, C, S, X, A, B, rtol=1e-10)
+
+    def test_a_rank_deficient(self):
+        """A individually rank-deficient (rank r < p) while [A;B] has full rank."""
+        rng = np.random.default_rng(43)
+        m, n, p, r = 8, 5, 6, 3
+        # A = (m×r)(r×p) has rank r; generic B is full-rank so [A;B] has rank p.
+        A = rng.standard_normal((m, r)) @ rng.standard_normal((r, p))
+        B = rng.standard_normal((n, p))
+
+        U, V, C, S, X = gsvd(A, B)
+        _check_reconstruction(U, V, C, S, X, A, B, rtol=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# Test: infinite generalized singular values (k > 0)
+# ---------------------------------------------------------------------------
+
+class TestInfiniteGSVs:
+    """Tests for pairs with k > 0 (infinite generalized singular values).
+
+    Infinite GSVs arise when a direction lies in col(A) but in null(B).
+    Construction: take m >= p (so col(A) = R^p for generic A) and n < p
+    (so null(B) is non-trivial).  For generic random matrices, k = p - n
+    and l = n exactly.
+    """
+
+    @staticmethod
+    def _make_pair(rng, m, n, p):
+        assert m >= p and n < p
+        return rng.standard_normal((m, p)), rng.standard_normal((n, p))
+
+    def test_k_value(self):
+        """k = p - n and l = n when A has full column rank and n < p."""
+        rng = np.random.default_rng(99)
+        m, n, p = 8, 3, 7
+        A, B = self._make_pair(rng, m, n, p)
+
+        *_, k, l = gsvd(A, B, mode='separate',
+                        compute_u=False, compute_v=False, compute_right=False)
+        assert k == p - n, f"Expected k={p - n}, got k={k}"
+        assert l == n,     f"Expected l={n}, got l={l}"
+
+    def test_reconstruction_with_k(self):
+        """Reconstruction A = U@C@X^H and B = V@S@X^H hold when k > 0."""
+        rng = np.random.default_rng(100)
+        m, n, p = 8, 3, 7
+        A, B = self._make_pair(rng, m, n, p)
+
+        U, V, C, S, X = gsvd(A, B)
+        _check_reconstruction(U, V, C, S, X, A, B, rtol=1e-10)
+
+    def test_c_ones_s_zeros_in_k_block(self):
+        """The first k entries of c equal 1 and the corresponding s entries equal 0."""
+        rng = np.random.default_rng(101)
+        m, n, p = 10, 4, 8   # k = p - n = 4
+        A, B = self._make_pair(rng, m, n, p)
+        k_expected = p - n
+
+        c, s = gsvdvals(A, B)
+        assert_allclose(c[:k_expected], np.ones(k_expected),  atol=1e-12)
+        assert_allclose(s[:k_expected], np.zeros(k_expected), atol=1e-12)

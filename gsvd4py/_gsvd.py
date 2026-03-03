@@ -484,7 +484,10 @@ def _sort_gsvd_outputs(C, S, X, U, V, k, m, n, compute_u, compute_v):
         return C, S, X, U, V
 
     c_finite = np.array([C[k + i, k + i] for i in range(finite_len)])
-    perm = np.argsort(-c_finite, kind='stable')
+    s_finite = np.array([S[i, k + i] for i in range(finite_len)])
+    # Primary sort: c descending. Secondary sort: s ascending (breaks ties in c,
+    # e.g. multiple alpha==1.0 entries whose beta values may be unsorted).
+    perm = np.lexsort((s_finite, -c_finite))
     if np.all(perm == np.arange(finite_len)):
         return C, S, X, U, V
 
@@ -501,7 +504,6 @@ def _sort_gsvd_outputs(C, S, X, U, V, k, m, n, compute_u, compute_v):
 
     # Update S finite block (rows 0..finite_len-1, cols k..k+finite_len-1)
     # S[i, k+i] = beta[k+i] for i in 0..finite_len-1
-    s_finite = np.array([S[i, k + i] for i in range(finite_len)])
     S = np.array(S)
     S[:finite_len, k:k + finite_len] = 0
     s_new = s_finite[perm]

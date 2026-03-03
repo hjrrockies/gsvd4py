@@ -9,3 +9,4 @@ build/
 test_symbol
 Claude.md
 uv.lock
+.DS_Store
