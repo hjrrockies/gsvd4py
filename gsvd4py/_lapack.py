@@ -93,6 +93,35 @@ def _load_lib():
     )
 
 
+def _get_lapack_fn(base_name, dtype_char):
+    """Return (fn, uses_hidden_lengths) for a LAPACK routine.
+
+    Parameters
+    ----------
+    base_name : str
+        Routine name without the leading dtype char, e.g. 'ggsvd3'.
+    dtype_char : str
+        One of 'd', 's', 'z', 'c'.
+    """
+    _load_lib()
+
+    if _lib_type == 'accelerate':
+        sym = f'{dtype_char}{base_name}$NEWLAPACK'
+        fn = _lib[sym]
+        uses_hidden_lengths = False
+    elif _lib_type == 'scipy_openblas':
+        sym = f'scipy_{dtype_char}{base_name}_'
+        fn = getattr(_lib, sym)
+        uses_hidden_lengths = True
+    else:   # 'system'
+        sym = f'{dtype_char}{base_name}_'
+        fn = getattr(_lib, sym)
+        uses_hidden_lengths = True
+
+    fn.restype = None
+    return fn, uses_hidden_lengths
+
+
 def get_ggsvd3(dtype_char):
     """Return the ctypes function handle for ?ggsvd3.
 
@@ -107,20 +136,38 @@ def get_ggsvd3(dtype_char):
     uses_hidden_lengths : bool
         True when the function uses the gfortran hidden char-length ABI.
     """
-    _load_lib()
+    return _get_lapack_fn('ggsvd3', dtype_char)
 
-    if _lib_type == 'accelerate':
-        sym = f'{dtype_char}ggsvd3$NEWLAPACK'
-        fn = _lib[sym]
-        uses_hidden_lengths = False
-    elif _lib_type == 'scipy_openblas':
-        sym = f'scipy_{dtype_char}ggsvd3_'
-        fn = getattr(_lib, sym)
-        uses_hidden_lengths = True
-    else:   # 'system'
-        sym = f'{dtype_char}ggsvd3_'
-        fn = getattr(_lib, sym)
-        uses_hidden_lengths = True
 
-    fn.restype = None
-    return fn, uses_hidden_lengths
+def get_ggsvp3(dtype_char):
+    """Return the ctypes function handle for ?ggsvp3.
+
+    Parameters
+    ----------
+    dtype_char : str
+        One of 'd', 's', 'z', 'c'.
+
+    Returns
+    -------
+    fn : ctypes function object (restype already set to None)
+    uses_hidden_lengths : bool
+        True when the function uses the gfortran hidden char-length ABI.
+    """
+    return _get_lapack_fn('ggsvp3', dtype_char)
+
+
+def get_tgsja(dtype_char):
+    """Return the ctypes function handle for ?tgsja.
+
+    Parameters
+    ----------
+    dtype_char : str
+        One of 'd', 's', 'z', 'c'.
+
+    Returns
+    -------
+    fn : ctypes function object (restype already set to None)
+    uses_hidden_lengths : bool
+        True when the function uses the gfortran hidden char-length ABI.
+    """
+    return _get_lapack_fn('tgsja', dtype_char)

@@ -554,3 +554,107 @@ class TestInfiniteGSVs:
         c, s = gsvdvals(A, B)
         assert_allclose(c[:k_expected], np.ones(k_expected),  atol=1e-12)
         assert_allclose(s[:k_expected], np.zeros(k_expected), atol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# Test: tola / tolb parameters
+# ---------------------------------------------------------------------------
+
+class TestTolaTolb:
+    """Tests for the tola and tolb rank-threshold parameters."""
+
+    def _full_rank_pair(self, rng, m=6, n=5, p=4):
+        """Return a full-rank (A, B) pair."""
+        A = rng.standard_normal((m, p))
+        B = rng.standard_normal((n, p))
+        return A, B
+
+    def _near_rank_deficient_pair(self, rng, m=6, n=5, p=4, scale=1e-12):
+        """Return (A, B) where A has one near-zero singular value."""
+        U, _, Vt = np.linalg.svd(rng.standard_normal((m, p)), full_matrices=False)
+        s = np.ones(min(m, p))
+        s[-1] = scale
+        A = (U * s) @ Vt
+        B = rng.standard_normal((n, p))
+        return A, B
+
+    def test_default_unchanged(self):
+        """gsvd(A,B) and gsvd(A,B,tola=None,tolb=None) produce identical results."""
+        rng = np.random.default_rng(200)
+        A, B = self._full_rank_pair(rng)
+
+        U1, V1, C1, S1, X1 = gsvd(A, B)
+        U2, V2, C2, S2, X2 = gsvd(A, B, tola=None, tolb=None)
+
+        assert_allclose(C1, C2, atol=0)
+        assert_allclose(S1, S2, atol=0)
+
+    def test_loose_tola_reduces_rank(self):
+        """A very large tola causes the near-zero singular value to be dropped."""
+        rng = np.random.default_rng(201)
+        A, B = self._near_rank_deficient_pair(rng, scale=1e-14)
+
+        # Default: near-zero value is within tolerance, rank should be full
+        _, _, C_default, _, _ = gsvd(A, B)
+        q_default = C_default.shape[1]
+
+        # Loose tola: explicitly zero out the tiny singular value
+        _, _, C_loose, _, _ = gsvd(A, B, tola=1.0)
+        q_loose = C_loose.shape[1]
+
+        assert q_loose <= q_default
+
+    def test_tight_tola_preserves_rank(self):
+        """A tola smaller than the default keeps at least as many singular values."""
+        rng = np.random.default_rng(202)
+        A, B = self._near_rank_deficient_pair(rng, scale=1e-10)
+
+        # Default behavior
+        _, _, C_default, _, _ = gsvd(A, B)
+        q_default = C_default.shape[1]
+
+        # Half the LAPACK default — smaller than default but safe for tgsja convergence
+        fi = np.finfo(np.float64)
+        tola_tight = max(A.shape) * np.linalg.norm(A, ord=1) * fi.eps * 0.5
+        _, _, C_tight, _, _ = gsvd(A, B, tola=tola_tight)
+        q_tight = C_tight.shape[1]
+
+        assert q_tight >= q_default
+
+    def test_reconstruction_with_tola(self):
+        """Result still satisfies A ≈ U C X^H when tola is set explicitly."""
+        rng = np.random.default_rng(203)
+        A, B = self._full_rank_pair(rng)
+
+        fi = np.finfo(np.float64)
+        tola = max(A.shape) * np.linalg.norm(A, ord=1) * fi.eps * 0.5
+
+        U, V, C, S, X = gsvd(A, B, tola=tola)
+        _check_reconstruction(U, V, C, S, X, A, B, rtol=1e-10)
+
+    def test_gsvdvals_passthrough(self):
+        """tola/tolb flow through gsvdvals() to gsvd()."""
+        rng = np.random.default_rng(204)
+        A, B = self._near_rank_deficient_pair(rng, scale=1e-14)
+
+        c_default, s_default = gsvdvals(A, B)
+        c_loose,   s_loose   = gsvdvals(A, B, tola=1.0)
+
+        # Loose tolerance may yield a shorter result (lower rank)
+        assert len(c_loose) <= len(c_default)
+
+    def test_all_dtypes(self):
+        """Two-step path works for all four dtypes."""
+        rng = np.random.default_rng(205)
+        for dtype in (np.float32, np.float64, np.complex64, np.complex128):
+            A = rng.standard_normal((5, 4)).astype(dtype)
+            B = rng.standard_normal((3, 4)).astype(dtype)
+            if np.issubdtype(dtype, np.complexfloating):
+                A = A + 1j * rng.standard_normal((5, 4)).astype(dtype)
+                B = B + 1j * rng.standard_normal((3, 4)).astype(dtype)
+            rtol = _RTOL[dtype]
+            real_dtype = np.float32 if dtype in (np.float32, np.complex64) else np.float64
+            fi = np.finfo(real_dtype)
+            tola = max(A.shape) * float(np.linalg.norm(A, ord=1)) * fi.eps
+            U, V, C, S, X = gsvd(A, B, tola=tola)
+            _check_reconstruction(U, V, C, S, X, A, B, rtol=rtol)

@@ -48,7 +48,7 @@ import ctypes
 
 import numpy as np
 
-from ._lapack import get_ggsvd3
+from ._lapack import get_ggsvd3, get_ggsvp3, get_tgsja
 
 # ---------------------------------------------------------------------------
 # dtype helpers
@@ -164,6 +164,238 @@ def _call_ggsvd3(a_f, b_f, alpha, beta, u_f, v_f, q_f, iwork,
 
 
 # ---------------------------------------------------------------------------
+# tola / tolb helpers
+# ---------------------------------------------------------------------------
+
+def _default_tola_tolb(a_f, b_f, real_dtype):
+    """Return LAPACK-default TOLA and TOLB.
+
+    Matches the internal formula used by dggsvd3:
+      anorm = dlange('1', ...)   -- 1-norm (max absolute column sum)
+      tola  = max(M, N) * max(anorm, unfl) * ulp
+    where ulp = machine epsilon and unfl = safe minimum (DLAMCH 'Safe Minimum').
+    """
+    m_lap, p_lap = a_f.shape    # LAPACK M, N
+    n_lap        = b_f.shape[0] # LAPACK P
+    fi   = np.finfo(real_dtype)
+    eps  = fi.eps
+    unfl = fi.tiny
+    anorm = np.linalg.norm(a_f, ord=1)
+    bnorm = np.linalg.norm(b_f, ord=1)
+    tola = max(m_lap, p_lap) * max(float(anorm), unfl) * eps
+    tolb = max(n_lap, p_lap) * max(float(bnorm), unfl) * eps
+    return tola, tolb
+
+
+def _call_ggsvp3(a_f, b_f, u_f, v_f, q_f, iwork,
+                 jobu, jobv, jobq, tola, tolb, lwork,
+                 fn, is_complex, real_dtype, uses_hidden_lengths):
+    """Call ?ggsvp3 once (workspace query or actual computation).
+
+    LAPACK signature (real):
+      DGGSVP3(JOBU, JOBV, JOBQ, M, P, N, A, LDA, B, LDB, TOLA, TOLB,
+              K, L, U, LDU, V, LDV, Q, LDQ, IWORK, TAU, WORK, LWORK, INFO)
+
+    Complex variants add RWORK (size 2*N) after LWORK and before INFO.
+    gfortran ABI appends three size_t(1) hidden args after INFO.
+
+    lwork=None triggers workspace query; returns optimal lwork as int.
+    Actual call returns (k, l, info).
+    """
+    m_lap, p_lap = a_f.shape    # LAPACK M, N
+    n_lap        = b_f.shape[0] # LAPACK P
+
+    lwork_val = lwork if lwork is not None else 1
+    work = np.zeros(max(1, lwork_val), dtype=a_f.dtype)
+    lwork_c = ctypes.c_int(-1 if lwork is None else lwork_val)
+
+    k_c    = ctypes.c_int(0)
+    l_c    = ctypes.c_int(0)
+    info_c = ctypes.c_int(0)
+
+    dummy = np.zeros((1, 1), dtype=a_f.dtype, order='F')
+
+    u_ptr   = _ptr(u_f)   if u_f is not None else _ptr(dummy)
+    v_ptr   = _ptr(v_f)   if v_f is not None else _ptr(dummy)
+    q_ptr   = _ptr(q_f)   if q_f is not None else _ptr(dummy)
+    ldu_val = m_lap        if u_f is not None else 1
+    ldv_val = n_lap        if v_f is not None else 1
+    ldq_val = p_lap        if q_f is not None else 1
+
+    jobu_b = jobu.encode()
+    jobv_b = jobv.encode()
+    jobq_b = jobq.encode()
+
+    tola_c = ctypes.c_double(tola) if real_dtype == np.float64 else ctypes.c_float(tola)
+    tolb_c = ctypes.c_double(tolb) if real_dtype == np.float64 else ctypes.c_float(tolb)
+
+    tau = np.zeros(p_lap, dtype=a_f.dtype)
+
+    args = [
+        jobu_b, jobv_b, jobq_b,
+        _iptr(m_lap), _iptr(n_lap), _iptr(p_lap),
+        _ptr(a_f),   _iptr(m_lap),
+        _ptr(b_f),   _iptr(n_lap),
+        ctypes.byref(tola_c), ctypes.byref(tolb_c),
+        ctypes.byref(k_c), ctypes.byref(l_c),
+        u_ptr,       _iptr(ldu_val),
+        v_ptr,       _iptr(ldv_val),
+        q_ptr,       _iptr(ldq_val),
+        _ptr(iwork), _ptr(tau),
+    ]
+
+    if is_complex:
+        rwork = np.zeros(2 * p_lap, dtype=real_dtype)
+        if uses_hidden_lengths:
+            # Standard gfortran ABI: WORK, LWORK, RWORK, INFO
+            args += [_ptr(work), ctypes.byref(lwork_c), _ptr(rwork)]
+        else:
+            # Accelerate NEWLAPACK: WORK, RWORK, LWORK, INFO (RWORK before LWORK)
+            args += [_ptr(work), _ptr(rwork), ctypes.byref(lwork_c)]
+    else:
+        args += [_ptr(work), ctypes.byref(lwork_c)]
+
+    args += [ctypes.byref(info_c)]
+
+    if uses_hidden_lengths:
+        one = ctypes.c_size_t(1)
+        args += [one, one, one]
+
+    fn(*args)
+
+    if lwork is None:
+        return int(work[0].real)
+
+    return k_c.value, l_c.value, info_c.value
+
+
+def _call_tgsja(a_f, b_f, alpha, beta, u_f, v_f, q_f,
+                jobu, jobv, jobq, k, l, tola, tolb,
+                fn, is_complex, real_dtype, uses_hidden_lengths):
+    """Call ?tgsja.
+
+    LAPACK signature (real):
+      DTGSJA(JOBU, JOBV, JOBQ, M, P, N, K, L, A, LDA, B, LDB,
+             TOLA, TOLB, ALPHA, BETA, U, LDU, V, LDV, Q, LDQ,
+             WORK, NCYCLE, INFO)
+
+    WORK is fixed size 2*N (= 2*p_lap).  No workspace query.
+    Complex variants add RWORK (size 2*N) after WORK and before NCYCLE.
+    gfortran ABI appends three size_t(1) hidden args after INFO.
+
+    Returns (k, l, info).  k and l are passed in (from ggsvp3) but LAPACK
+    may update them; we return the post-call values.
+    """
+    m_lap, p_lap = a_f.shape    # LAPACK M, N
+    n_lap        = b_f.shape[0] # LAPACK P
+
+    k_c      = ctypes.c_int(k)
+    l_c      = ctypes.c_int(l)
+    ncycle_c = ctypes.c_int(0)
+    info_c   = ctypes.c_int(0)
+
+    dummy = np.zeros((1, 1), dtype=a_f.dtype, order='F')
+
+    u_ptr   = _ptr(u_f)   if u_f is not None else _ptr(dummy)
+    v_ptr   = _ptr(v_f)   if v_f is not None else _ptr(dummy)
+    q_ptr   = _ptr(q_f)   if q_f is not None else _ptr(dummy)
+    ldu_val = m_lap        if u_f is not None else 1
+    ldv_val = n_lap        if v_f is not None else 1
+    ldq_val = p_lap        if q_f is not None else 1
+
+    jobu_b = jobu.encode()
+    jobv_b = jobv.encode()
+    jobq_b = jobq.encode()
+
+    tola_c = ctypes.c_double(tola) if real_dtype == np.float64 else ctypes.c_float(tola)
+    tolb_c = ctypes.c_double(tolb) if real_dtype == np.float64 else ctypes.c_float(tolb)
+
+    work = np.zeros(2 * p_lap, dtype=a_f.dtype)
+
+    args = [
+        jobu_b, jobv_b, jobq_b,
+        _iptr(m_lap), _iptr(n_lap), _iptr(p_lap),
+        ctypes.byref(k_c), ctypes.byref(l_c),
+        _ptr(a_f),   _iptr(m_lap),
+        _ptr(b_f),   _iptr(n_lap),
+        ctypes.byref(tola_c), ctypes.byref(tolb_c),
+        _ptr(alpha), _ptr(beta),
+        u_ptr,       _iptr(ldu_val),
+        v_ptr,       _iptr(ldv_val),
+        q_ptr,       _iptr(ldq_val),
+    ]
+
+    if is_complex and uses_hidden_lengths:
+        # Standard gfortran ABI: WORK, RWORK, NCYCLE, INFO
+        rwork = np.zeros(2 * p_lap, dtype=real_dtype)
+        args += [_ptr(work), _ptr(rwork)]
+    else:
+        # Real types (any platform) or Accelerate complex: WORK, NCYCLE, INFO (no RWORK)
+        args += [_ptr(work)]
+
+    args += [ctypes.byref(ncycle_c), ctypes.byref(info_c)]
+
+    if uses_hidden_lengths:
+        one = ctypes.c_size_t(1)
+        args += [one, one, one]
+
+    fn(*args)
+
+    return k_c.value, l_c.value, info_c.value
+
+
+def _ggsvp3_lwork(a_f, b_f):
+    """Return a safe work array size for ?ggsvp3 without querying LAPACK.
+
+    The LAPACK minimum is max(3*N, M, P).  We use a generous estimate with a
+    typical block size of 64 so that the result is also close to optimal.
+    """
+    m_lap, p_lap = a_f.shape    # LAPACK M, N
+    n_lap        = b_f.shape[0] # LAPACK P
+    nb = 64
+    return max(3 * p_lap, max(m_lap, n_lap) * nb + p_lap)
+
+
+def _call_ggsvp3_tgsja(a_f, b_f, alpha, beta, u_f, v_f, q_f, iwork,
+                        jobu, jobv, jobq, tola, tolb, lwork,
+                        fn_p3, fn_tgsja, is_complex, real_dtype,
+                        uses_hidden_lengths):
+    """Two-step GSVD: call ?ggsvp3 then ?tgsja.
+
+    This is equivalent to calling ?ggsvd3, but with explicit tola/tolb.
+    Returns (k, l, info).
+    """
+    # Work size for ggsvp3: use caller-supplied value or compute a safe default.
+    # We deliberately avoid the workspace query (LWORK=-1) here because some
+    # LAPACK builds (e.g. Accelerate cggsvp3) reject it for complex types.
+    if lwork is not None and lwork != -1:
+        lwork_use = lwork
+    else:
+        lwork_use = _ggsvp3_lwork(a_f, b_f)
+
+    # --- Step 1: ggsvp3 ---
+    k, l, info = _call_ggsvp3(
+        a_f, b_f, u_f, v_f, q_f, iwork,
+        jobu, jobv, jobq, tola, tolb, lwork=lwork_use,
+        fn=fn_p3, is_complex=is_complex, real_dtype=real_dtype,
+        uses_hidden_lengths=uses_hidden_lengths,
+    )
+
+    if info != 0:
+        return k, l, info
+
+    # --- Step 2: tgsja ---
+    k, l, info = _call_tgsja(
+        a_f, b_f, alpha, beta, u_f, v_f, q_f,
+        jobu, jobv, jobq, k, l, tola, tolb,
+        fn=fn_tgsja, is_complex=is_complex, real_dtype=real_dtype,
+        uses_hidden_lengths=uses_hidden_lengths,
+    )
+
+    return k, l, info
+
+
+# ---------------------------------------------------------------------------
 # Output construction helpers
 # ---------------------------------------------------------------------------
 
@@ -227,7 +459,8 @@ def _extract_R(a_f, b_f, m, n, p, k, l):
 # ---------------------------------------------------------------------------
 
 def gsvd(a, b, mode='full', compute_u=True, compute_v=True, compute_right=True,
-         overwrite_a=False, overwrite_b=False, lwork=None, check_finite=True):
+         overwrite_a=False, overwrite_b=False, lwork=None, check_finite=True,
+         tola=None, tolb=None):
     """Generalized Singular Value Decomposition.
 
     Computes the GSVD of the matrix pair (a, b) using the LAPACK routine
@@ -262,6 +495,15 @@ def gsvd(a, b, mode='full', compute_u=True, compute_v=True, compute_right=True,
         LAPACK work array size.  None (or -1) triggers an optimal query.
     check_finite : bool, default True
         Check that a and b contain only finite values.
+    tola : float or None, default None
+        Threshold for determining the effective numerical rank of a.
+        Values below ``tola`` are treated as zero. If None, uses the
+        LAPACK default ``max(m, p) * norm(a, ord=1) * machine_epsilon``.
+        Providing tola (or tolb) causes the two lower-level LAPACK routines
+        ?ggsvp3 and ?tgsja to be called directly instead of ?ggsvd3.
+    tolb : float or None, default None
+        Threshold for determining the effective numerical rank of b.
+        If None, uses ``max(n, p) * norm(b, ord=1) * machine_epsilon``.
 
     Returns
     -------
@@ -324,11 +566,6 @@ def gsvd(a, b, mode='full', compute_u=True, compute_v=True, compute_right=True,
     b_f = _prep(b, overwrite_b)
 
     # ------------------------------------------------------------------
-    # Load LAPACK function
-    # ------------------------------------------------------------------
-    fn, uses_hidden_lengths = get_ggsvd3(dtype_char)
-
-    # ------------------------------------------------------------------
     # Allocate output arrays
     # ------------------------------------------------------------------
     jobu_char = 'U' if compute_u else 'N'
@@ -343,35 +580,62 @@ def gsvd(a, b, mode='full', compute_u=True, compute_v=True, compute_right=True,
     v_f    = np.zeros((n, n), dtype=dtype, order='F') if compute_v else None
 
     # ------------------------------------------------------------------
-    # Workspace query
+    # LAPACK call: ?ggsvd3 (default) or ?ggsvp3 + ?tgsja (when tola/tolb set)
     # ------------------------------------------------------------------
-    if lwork is None or lwork == -1:
-        opt = _call_ggsvd3(
+    if tola is None and tolb is None:
+        # --- default path: single ?ggsvd3 call ---
+        fn, uses_hidden_lengths = get_ggsvd3(dtype_char)
+
+        if lwork is None or lwork == -1:
+            opt = _call_ggsvd3(
+                a_f, b_f, alpha, beta, u_f, v_f, q_f, iwork,
+                jobu_char, jobv_char, jobq_char,
+                lwork=None, fn=fn, is_complex=is_complex,
+                real_dtype=real_dtype, uses_hidden_lengths=uses_hidden_lengths,
+            )
+            lwork_use = max(opt, 1)
+        else:
+            lwork_use = lwork
+
+        k, l, info = _call_ggsvd3(
             a_f, b_f, alpha, beta, u_f, v_f, q_f, iwork,
             jobu_char, jobv_char, jobq_char,
-            lwork=None, fn=fn, is_complex=is_complex,
+            lwork=lwork_use, fn=fn, is_complex=is_complex,
             real_dtype=real_dtype, uses_hidden_lengths=uses_hidden_lengths,
         )
-        lwork_use = max(opt, 1)
+
+        if info < 0:
+            raise ValueError(f"Illegal argument #{-info} passed to ?ggsvd3.")
+        if info > 0:
+            raise np.linalg.LinAlgError(
+                f"LAPACK ?ggsvd3 failed to converge (info={info})."
+            )
+
     else:
-        lwork_use = lwork
+        # --- tola/tolb path: ?ggsvp3 + ?tgsja ---
+        tola_use, tolb_use = _default_tola_tolb(a_f, b_f, real_dtype)
+        if tola is not None:
+            tola_use = float(tola)
+        if tolb is not None:
+            tolb_use = float(tolb)
 
-    # ------------------------------------------------------------------
-    # Actual LAPACK call
-    # ------------------------------------------------------------------
-    k, l, info = _call_ggsvd3(
-        a_f, b_f, alpha, beta, u_f, v_f, q_f, iwork,
-        jobu_char, jobv_char, jobq_char,
-        lwork=lwork_use, fn=fn, is_complex=is_complex,
-        real_dtype=real_dtype, uses_hidden_lengths=uses_hidden_lengths,
-    )
+        fn_p3,    uses_hidden_p3    = get_ggsvp3(dtype_char)
+        fn_tgsja, uses_hidden_tgsja = get_tgsja(dtype_char)
 
-    if info < 0:
-        raise ValueError(f"Illegal argument #{-info} passed to dggsvd3.")
-    if info > 0:
-        raise np.linalg.LinAlgError(
-            f"LAPACK ?ggsvd3 failed to converge (info={info})."
+        k, l, info = _call_ggsvp3_tgsja(
+            a_f, b_f, alpha, beta, u_f, v_f, q_f, iwork,
+            jobu_char, jobv_char, jobq_char, tola_use, tolb_use, lwork,
+            fn_p3=fn_p3, fn_tgsja=fn_tgsja,
+            is_complex=is_complex, real_dtype=real_dtype,
+            uses_hidden_lengths=uses_hidden_p3,
         )
+
+        if info < 0:
+            raise ValueError(f"Illegal argument #{-info} passed to ?ggsvp3/?tgsja.")
+        if info > 0:
+            raise np.linalg.LinAlgError(
+                f"LAPACK ?tgsja failed to converge (info={info})."
+            )
 
     q_rank = k + l   # effective numerical rank
 
@@ -391,7 +655,8 @@ def gsvd(a, b, mode='full', compute_u=True, compute_v=True, compute_right=True,
             mode, compute_u, compute_v, compute_right,
         )
 
-def gsvdvals(a, b, overwrite_a=False, overwrite_b=False, lwork=None, check_finite=True):
+def gsvdvals(a, b, overwrite_a=False, overwrite_b=False, lwork=None, check_finite=True,
+             tola=None, tolb=None):
     """Generalized singular value pairs of the matrix pair (a, b).
 
     Computes the generalized cosines ``c`` and sines ``s`` that satisfy
@@ -417,6 +682,10 @@ def gsvdvals(a, b, overwrite_a=False, overwrite_b=False, lwork=None, check_finit
         LAPACK work array size. None (or -1) triggers an optimal query.
     check_finite : bool, default True
         Check that a and b contain only finite values.
+    tola : float or None, default None
+        Rank threshold for a; passed directly to gsvd().
+    tolb : float or None, default None
+        Rank threshold for b; passed directly to gsvd().
 
     Returns
     -------
@@ -432,7 +701,7 @@ def gsvdvals(a, b, overwrite_a=False, overwrite_b=False, lwork=None, check_finit
     """
     # get singular value matrices only
     C, S = gsvd(a, b, 'econ', False, False, False, overwrite_a,
-                overwrite_b, lwork, check_finite)
+                overwrite_b, lwork, check_finite, tola, tolb)
 
     # one singular value pair per column of C, S
     c, s = np.max(C, axis=0), np.max(S, axis=0)
