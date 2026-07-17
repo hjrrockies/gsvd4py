@@ -93,7 +93,9 @@ tola = max(m, p) * norm(A, ord=1) * machine_epsilon
 tolb = max(n, p) * norm(B, ord=1) * machine_epsilon
 ```
 
-You can override these to tighten or loosen the rank determination:
+You can override these to tighten or loosen the rank determination.
+The internal Jacobi convergence threshold (used by `?tgsja`) is always set
+to the LAPACK default, so factorization accuracy is not affected by your choice:
 
 ```python
 import numpy as np
@@ -145,12 +147,14 @@ gsvd(a, b, mode='full', compute_u=True, compute_v=True, compute_right=True,
 | `overwrite_b` | Allow overwriting `b` to avoid a copy (default `False`) |
 | `lwork` | Work array size; `None` triggers an optimal workspace query |
 | `check_finite` | Check inputs for non-finite values (default `True`) |
-| `tola` | Rank threshold for `a`. Singular values of `a` below this are treated as zero when determining `q = k + l`. `None` uses the LAPACK default `max(m, p) * norm(a, ord=1) * eps`. |
+| `tola` | Rank threshold for `a`. Singular values of `a` below this are treated as zero when determining `q = k + l`. `None` uses the LAPACK default `max(m, p) * norm(a, ord=1) * eps`. Does not affect factorization accuracy. |
 | `tolb` | Rank threshold for `b`. Same convention as `tola`. |
 
 When either `tola` or `tolb` is provided, `gsvd` calls the lower-level LAPACK
 routines `?ggsvp3` and `?tgsja` directly (instead of `?ggsvd3`) so that the
-tolerances can be passed explicitly.
+rank-truncation thresholds can be passed explicitly. The Jacobi convergence
+tolerance inside `?tgsja` is always set to the LAPACK default, independent of
+`tola`/`tolb`.
 
 ### `gsvdvals`
 

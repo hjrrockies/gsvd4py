@@ -506,13 +506,17 @@ def gsvd(a, b, mode='full', compute_u=True, compute_v=True, compute_right=True,
     check_finite : bool, default True
         Check that a and b contain only finite values.
     tola : float or None, default None
-        Threshold for determining the effective numerical rank of a.
-        Values below ``tola`` are treated as zero. If None, uses the
-        LAPACK default ``max(m, p) * norm(a, ord=1) * machine_epsilon``.
+        Rank-truncation threshold for a: columns of a with norm below
+        ``tola`` are treated as zero when determining the numerical rank.
+        If None, uses the LAPACK default
+        ``max(m, p) * norm(a, ord=1) * machine_epsilon``.
         Providing tola (or tolb) causes the two lower-level LAPACK routines
         ?ggsvp3 and ?tgsja to be called directly instead of ?ggsvd3.
+        The Jacobi convergence tolerance inside ?tgsja is always set to the
+        LAPACK default regardless of tola, so convergence accuracy is not
+        affected by this parameter.
     tolb : float or None, default None
-        Threshold for determining the effective numerical rank of b.
+        Rank-truncation threshold for b: analogous to tola.
         If None, uses ``max(n, p) * norm(b, ord=1) * machine_epsilon``.
 
     Returns
