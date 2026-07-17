@@ -373,6 +373,16 @@ def _call_ggsvp3_tgsja(a_f, b_f, alpha, beta, u_f, v_f, q_f, iwork,
     else:
         lwork_use = _ggsvp3_lwork(a_f, b_f)
 
+    # tola/tolb are rank-determination thresholds for ggsvp3.  tgsja uses them
+    # as Jacobi convergence thresholds (stopping when |off-diag| < tola*||R||),
+    # which is a separate concern.  Always use the LAPACK-default tolerances for
+    # tgsja so that convergence quality is independent of the user's rank choice.
+    # This also handles tola=0 (full-rank treatment): tola_default is always
+    # positive, so tgsja can converge even when tola=0 suppresses rank truncation.
+    tola_default, tolb_default = _default_tola_tolb(a_f, b_f, real_dtype)
+    tola_tgsja = tola_default
+    tolb_tgsja = tolb_default
+
     # --- Step 1: ggsvp3 ---
     k, l, info = _call_ggsvp3(
         a_f, b_f, u_f, v_f, q_f, iwork,
@@ -387,7 +397,7 @@ def _call_ggsvp3_tgsja(a_f, b_f, alpha, beta, u_f, v_f, q_f, iwork,
     # --- Step 2: tgsja ---
     k, l, info = _call_tgsja(
         a_f, b_f, alpha, beta, u_f, v_f, q_f,
-        jobu, jobv, jobq, k, l, tola, tolb,
+        jobu, jobv, jobq, k, l, tola_tgsja, tolb_tgsja,
         fn=fn_tgsja, is_complex=is_complex, real_dtype=real_dtype,
         uses_hidden_lengths=uses_hidden_lengths,
     )
