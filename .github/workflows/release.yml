@@ -1,0 +1,80 @@
+name: release
+
+# Publishing is triggered by publishing a GitHub Release, so the release page
+# is the human checkpoint. Draft it, check it, then hit Publish.
+on:
+  release:
+    types: [published]
+
+jobs:
+  # Do not publish anything that does not pass its own test suite: a release
+  # can be cut from any commit, including one whose CI never went green.
+  test:
+    name: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          python -m pip install --upgrade pip
+          python -m pip install .[test]
+      - run: python -m pytest tests/ -v
+
+  build:
+    name: build distributions
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          python -m twine check --strict dist/*
+
+      # The version lives in gsvd4py.__version__; the tag is typed by hand.
+      # Catch the mismatch here rather than burning a PyPI version number on it.
+      - name: Check tag matches package version
+        run: |
+          python -m pip install --no-deps .
+          pkg=$(python -c "import gsvd4py; print(gsvd4py.__version__)")
+          tag="${GITHUB_REF_NAME#v}"
+          echo "package: $pkg / tag: $tag"
+          test "$pkg" = "$tag" || {
+            echo "::error::tag $GITHUB_REF_NAME does not match gsvd4py.__version__ ($pkg)"
+            exit 1
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+
+    # Register this on PyPI as the trusted publisher's environment. If you
+    # leave the environment field blank there, delete these two lines.
+    environment:
+      name: pypi
+      url: https://pypi.org/project/gsvd4py/
+
+    # OIDC: GitHub mints a short-lived identity token that PyPI verifies
+    # against the registered publisher. No API token is stored anywhere.
+    permissions:
+      id-token: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
