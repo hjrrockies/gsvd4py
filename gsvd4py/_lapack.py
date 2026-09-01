@@ -38,6 +38,19 @@ def _shared_lib_pattern():
     return '*.so*'
 
 
+def _dlopen(path):
+    """Open one shared library, handling the Windows DLL search path.
+
+    RTLD_GLOBAL (a no-op on Windows) lets a library loaded here satisfy the
+    dependencies of one loaded afterwards.
+    """
+    if sys.platform == 'win32':
+        # Let the loader find any DLLs the library depends on.
+        with os.add_dll_directory(os.path.dirname(path)):
+            return ctypes.CDLL(path, winmode=0)
+    return ctypes.CDLL(path, mode=ctypes.RTLD_GLOBAL)
+
+
 def _try_load(path, attempts=None):
     """Load `path` and return (lib, lib_type), or None if it has no ?ggsvd3.
 
@@ -47,12 +60,7 @@ def _try_load(path, attempts=None):
     message raised when nothing works.
     """
     try:
-        if sys.platform == 'win32':
-            # Let the loader find any DLLs the library depends on.
-            with os.add_dll_directory(os.path.dirname(path)):
-                lib = ctypes.CDLL(path, winmode=0)
-        else:
-            lib = ctypes.CDLL(path)
+        lib = _dlopen(path)
     except (OSError, TypeError) as exc:
         if attempts is not None:
             attempts.append(f"{path}: could not load ({exc})")
@@ -86,6 +94,43 @@ def _scipy_bundled_lib_dirs():
     ]
 
 
+def _load_from_dir(paths, attempts):
+    """Load the LAPACK provider out of a directory of co-located libraries.
+
+    Older SciPy wheels (<= 1.13) bundle libopenblasp alongside the libgfortran
+    and libquadmath it depends on, without a usable RPATH -- so loading the
+    OpenBLAS directly fails until its dependencies are already in the process.
+    Load everything with RTLD_GLOBAL, retrying until no further progress is
+    made, so each pass can satisfy the next one's dependencies; then probe.
+    """
+    loaded, remaining = [], list(paths)
+
+    while remaining:
+        progress, still = False, []
+        for path in remaining:
+            try:
+                loaded.append((path, _dlopen(path)))
+                progress = True
+            except (OSError, TypeError) as exc:
+                still.append((path, exc))
+        if not progress:
+            attempts.extend(f"{path}: could not load ({exc})"
+                            for path, exc in still)
+            break
+        remaining = [path for path, _ in still]
+
+    for path, lib in loaded:
+        for sym, lib_type in (('scipy_dggsvd3_', 'scipy_openblas'),
+                              ('dggsvd3_', 'system')):
+            try:
+                getattr(lib, sym)
+                return lib, lib_type
+            except AttributeError:
+                pass
+        attempts.append(f"{path}: loaded, but exports no dggsvd3_")
+    return None
+
+
 def _load_lib():
     global _lib, _lib_type
 
@@ -117,16 +162,14 @@ def _load_lib():
         if not os.path.isdir(lib_dir):
             attempts.append(f"{lib_dir}: no such directory")
             continue
-        # Prefer the OpenBLAS itself over the gfortran/quadmath libs beside it.
-        paths = sorted(glob.glob(os.path.join(lib_dir, pattern)),
-                       key=lambda p: 'openblas' not in os.path.basename(p).lower())
+        paths = glob.glob(os.path.join(lib_dir, pattern))
         if not paths:
             attempts.append(f"{lib_dir}: no {pattern} files")
-        for path in paths:
-            found = _try_load(path, attempts)
-            if found is not None:
-                _lib, _lib_type = found
-                return
+            continue
+        found = _load_from_dir(paths, attempts)
+        if found is not None:
+            _lib, _lib_type = found
+            return
 
     # --- Strategy 3: scipy_openblas32 / scipy_openblas64 packages ---
     for _pkg in ('scipy_openblas32', 'scipy_openblas64'):
