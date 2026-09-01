@@ -241,19 +241,19 @@ def _call_ggsvp3(a_f, b_f, u_f, v_f, q_f, iwork,
         u_ptr,       _iptr(ldu_val),
         v_ptr,       _iptr(ldv_val),
         q_ptr,       _iptr(ldq_val),
-        _ptr(iwork), _ptr(tau),
+        _ptr(iwork),
     ]
 
     if is_complex:
         rwork = np.zeros(2 * p_lap, dtype=real_dtype)
         if uses_hidden_lengths:
-            # Standard gfortran ABI: WORK, LWORK, RWORK, INFO
-            args += [_ptr(work), ctypes.byref(lwork_c), _ptr(rwork)]
+            # Netlib ABI: IWORK, RWORK, TAU, WORK, LWORK, INFO
+            args += [_ptr(rwork), _ptr(tau), _ptr(work), ctypes.byref(lwork_c)]
         else:
-            # Accelerate NEWLAPACK: WORK, RWORK, LWORK, INFO (RWORK before LWORK)
-            args += [_ptr(work), _ptr(rwork), ctypes.byref(lwork_c)]
+            # Accelerate NEWLAPACK: IWORK, TAU, WORK, RWORK, LWORK, INFO
+            args += [_ptr(tau), _ptr(work), _ptr(rwork), ctypes.byref(lwork_c)]
     else:
-        args += [_ptr(work), ctypes.byref(lwork_c)]
+        args += [_ptr(tau), _ptr(work), ctypes.byref(lwork_c)]
 
     args += [ctypes.byref(info_c)]
 
@@ -325,13 +325,9 @@ def _call_tgsja(a_f, b_f, alpha, beta, u_f, v_f, q_f,
         q_ptr,       _iptr(ldq_val),
     ]
 
-    if is_complex and uses_hidden_lengths:
-        # Standard gfortran ABI: WORK, RWORK, NCYCLE, INFO
-        rwork = np.zeros(2 * p_lap, dtype=real_dtype)
-        args += [_ptr(work), _ptr(rwork)]
-    else:
-        # Real types (any platform) or Accelerate complex: WORK, NCYCLE, INFO (no RWORK)
-        args += [_ptr(work)]
+    # ?tgsja takes no RWORK in any variant: netlib CTGSJA/ZTGSJA end with
+    # WORK, NCYCLE, INFO, and WORK is already complex of length 2*N.
+    args += [_ptr(work)]
 
     args += [ctypes.byref(ncycle_c), ctypes.byref(info_c)]
 
