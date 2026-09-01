@@ -5,12 +5,16 @@ name: release
 on:
   release:
     types: [published]
+  # Manual, non-destructive check that the PyPI trusted publisher is
+  # registered correctly. Mints a credential and discards it; uploads nothing.
+  workflow_dispatch:
 
 jobs:
   # Do not publish anything that does not pass its own test suite: a release
   # can be cut from any commit, including one whose CI never went green.
   test:
     name: verify
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,6 +28,7 @@ jobs:
 
   build:
     name: build distributions
+    if: github.event_name == 'release'
     needs: test
     runs-on: ubuntu-latest
     steps:
@@ -58,6 +63,7 @@ jobs:
 
   publish:
     name: publish to PyPI
+    if: github.event_name == 'release'
     needs: build
     runs-on: ubuntu-latest
 
@@ -78,3 +84,36 @@ jobs:
           name: dist
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  # Proves the OIDC claims (repo, workflow file, environment) match what is
+  # registered on PyPI, without consuming a version number. Must live in this
+  # file: the workflow filename is part of the claim being verified.
+  check-publisher:
+    name: check trusted publisher
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/gsvd4py/
+    permissions:
+      id-token: write
+    steps:
+      - name: Exchange an OIDC token with PyPI
+        run: |
+          set -euo pipefail
+          oidc=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=pypi" | jq -r '.value')
+          code=$(curl -sS -o /tmp/resp.json -w '%{http_code}' \
+            -X POST https://pypi.org/_/oidc/mint-token \
+            -d "{\"token\": \"$oidc\"}")
+          # The response body holds a real (short-lived) upload credential.
+          # Report only whether one came back -- never print it.
+          if [ "$code" = "200" ] && jq -e 'has("token")' /tmp/resp.json >/dev/null; then
+            echo "Trusted publisher is registered correctly: PyPI issued a credential."
+          else
+            echo "::error::PyPI refused to mint a token (HTTP $code)."
+            jq -r '.message // "no message"' /tmp/resp.json 2>/dev/null || true
+            jq -r '.errors[]?.description // empty' /tmp/resp.json 2>/dev/null || true
+            exit 1
+          fi
+          rm -f /tmp/resp.json
