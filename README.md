@@ -153,4 +153,4 @@ No compilation is required.
 
 ## License
 
-MIT
+BSD-3-Clause. See [LICENSE](LICENSE).
