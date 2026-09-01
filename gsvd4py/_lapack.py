@@ -38,11 +38,13 @@ def _shared_lib_pattern():
     return '*.so*'
 
 
-def _try_load(path):
+def _try_load(path, attempts=None):
     """Load `path` and return (lib, lib_type), or None if it has no ?ggsvd3.
 
     Probes both the scipy_-prefixed and the plain Fortran symbol, so the same
     helper handles SciPy's vendored OpenBLAS and an unprefixed system LAPACK.
+    Records why each candidate was rejected in `attempts`, for the error
+    message raised when nothing works.
     """
     try:
         if sys.platform == 'win32':
@@ -51,7 +53,9 @@ def _try_load(path):
                 lib = ctypes.CDLL(path, winmode=0)
         else:
             lib = ctypes.CDLL(path)
-    except (OSError, TypeError):
+    except (OSError, TypeError) as exc:
+        if attempts is not None:
+            attempts.append(f"{path}: could not load ({exc})")
         return None
 
     for sym, lib_type in (('scipy_dggsvd3_', 'scipy_openblas'),
@@ -61,6 +65,9 @@ def _try_load(path):
             return lib, lib_type
         except AttributeError:
             pass
+
+    if attempts is not None:
+        attempts.append(f"{path}: loaded, but exports no dggsvd3_")
     return None
 
 
@@ -85,6 +92,8 @@ def _load_lib():
     if _lib is not None:
         return
 
+    attempts = []   # (path, reason) notes for the error message
+
     # --- Strategy 1: Apple Accelerate (macOS) ---
     if sys.platform == 'darwin':
         try:
@@ -95,17 +104,26 @@ def _load_lib():
             _lib = lib
             _lib_type = 'accelerate'
             return
-        except (OSError, KeyError):
-            pass
+        except (OSError, KeyError) as exc:
+            attempts.append(f"Accelerate.framework: {exc}")
 
     # --- Strategy 2: the OpenBLAS bundled inside the SciPy wheel ---
     pattern = _shared_lib_pattern()
-    for lib_dir in _scipy_bundled_lib_dirs():
+    bundled_dirs = _scipy_bundled_lib_dirs()
+    if not bundled_dirs:
+        attempts.append("scipy is not importable, so its bundled LAPACK "
+                        "could not be searched")
+    for lib_dir in bundled_dirs:
+        if not os.path.isdir(lib_dir):
+            attempts.append(f"{lib_dir}: no such directory")
+            continue
         # Prefer the OpenBLAS itself over the gfortran/quadmath libs beside it.
         paths = sorted(glob.glob(os.path.join(lib_dir, pattern)),
                        key=lambda p: 'openblas' not in os.path.basename(p).lower())
+        if not paths:
+            attempts.append(f"{lib_dir}: no {pattern} files")
         for path in paths:
-            found = _try_load(path)
+            found = _try_load(path, attempts)
             if found is not None:
                 _lib, _lib_type = found
                 return
@@ -117,7 +135,7 @@ def _load_lib():
         except ImportError:
             continue
         for path in glob.glob(os.path.join(pkg.get_lib_dir(), pattern)):
-            found = _try_load(path)
+            found = _try_load(path, attempts)
             if found is not None:
                 _lib, _lib_type = found
                 return
@@ -138,15 +156,17 @@ def _load_lib():
         path = ctypes.util.find_library(name)
         if not path:
             continue
-        found = _try_load(path)
+        found = _try_load(path, attempts)
         if found is not None:
             _lib, _lib_type = found
             return
 
+    detail = "\n  ".join(attempts) if attempts else "no candidates found"
     raise ImportError(
         "gsvd4py: Could not find a LAPACK library providing dggsvd3. "
         "Ensure scipy is installed (pip install scipy), or install "
-        "scipy-openblas32 (pip install scipy-openblas32)."
+        "scipy-openblas32 (pip install scipy-openblas32).\n"
+        "Searched:\n  " + detail
     )
 
 
@@ -194,37 +214,3 @@ def get_ggsvd3(dtype_char):
         True when the function uses the gfortran hidden char-length ABI.
     """
     return _get_lapack_fn('ggsvd3', dtype_char)
-
-
-def get_ggsvp3(dtype_char):
-    """Return the ctypes function handle for ?ggsvp3.
-
-    Parameters
-    ----------
-    dtype_char : str
-        One of 'd', 's', 'z', 'c'.
-
-    Returns
-    -------
-    fn : ctypes function object (restype already set to None)
-    uses_hidden_lengths : bool
-        True when the function uses the gfortran hidden char-length ABI.
-    """
-    return _get_lapack_fn('ggsvp3', dtype_char)
-
-
-def get_tgsja(dtype_char):
-    """Return the ctypes function handle for ?tgsja.
-
-    Parameters
-    ----------
-    dtype_char : str
-        One of 'd', 's', 'z', 'c'.
-
-    Returns
-    -------
-    fn : ctypes function object (restype already set to None)
-    uses_hidden_lengths : bool
-        True when the function uses the gfortran hidden char-length ABI.
-    """
-    return _get_lapack_fn('tgsja', dtype_char)
