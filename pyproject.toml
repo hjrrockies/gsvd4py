@@ -4,8 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gsvd4py"
-version = "0.3.0"
 description = "Generalized SVD (GSVD) via LAPACK ?ggsvd3"
+# Single source of truth: gsvd4py.__version__
+dynamic = ["version"]
 readme = "README.md"
 requires-python = ">=3.9"
 authors = [{name = "Hayden Ringer", email = "hjrrockies@gmail.com"}]
@@ -39,3 +40,6 @@ Homepage = "https://github.com/hjrrockies/gsvd4py"
 
 [project.optional-dependencies]
 test = ["pytest"]
+
+[tool.setuptools.dynamic]
+version = {attr = "gsvd4py.__version__"}

@@ -2,4 +2,6 @@
 
 from ._gsvd import gsvd, gsvdvals
 
-__all__ = ['gsvd', 'gsvdvals']
+__version__ = '0.3.0'
+
+__all__ = ['gsvd', 'gsvdvals', '__version__']

@@ -18,6 +18,7 @@ import numpy as np
 import pytest
 from numpy.testing import assert_allclose
 
+import gsvd4py
 from gsvd4py import gsvd, gsvdvals
 import gsvd4py._lapack as _lapack_mod
 
@@ -31,6 +32,29 @@ _RTOL = {
     np.complex64:  1e-5,
     np.complex128: 1e-12,
 }
+
+
+# ---------------------------------------------------------------------------
+# Test: package metadata
+# ---------------------------------------------------------------------------
+
+class TestVersion:
+    def test_version_is_exposed(self):
+        assert isinstance(gsvd4py.__version__, str)
+        # at least "major.minor"
+        parts = gsvd4py.__version__.split('.')
+        assert len(parts) >= 2
+        assert all(p and p[0].isdigit() for p in parts[:2])
+
+    def test_version_matches_installed_metadata(self):
+        # pyproject reads the version from gsvd4py.__version__; if the two ever
+        # disagree, the attribute is not the single source of truth it claims.
+        from importlib.metadata import PackageNotFoundError, version
+        try:
+            installed = version('gsvd4py')
+        except PackageNotFoundError:
+            pytest.skip('gsvd4py is not installed in this environment')
+        assert installed == gsvd4py.__version__
 
 
 # ---------------------------------------------------------------------------
