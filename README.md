@@ -1,6 +1,7 @@
 # gsvd4py
 
 [![PyPI version](https://img.shields.io/pypi/v/gsvd4py.svg)](https://pypi.org/project/gsvd4py/)
+[![tests](https://github.com/hjrrockies/gsvd4py/actions/workflows/tests.yml/badge.svg)](https://github.com/hjrrockies/gsvd4py/actions/workflows/tests.yml)
 
 A lightweight Python wrapper for the LAPACK `?ggsvd3` routines, providing the Generalized Singular Value Decomposition (GSVD) in a style similar to `scipy.linalg`. It links to the same LAPACK library that SciPy uses on your machine — no separate LAPACK installation required.
 

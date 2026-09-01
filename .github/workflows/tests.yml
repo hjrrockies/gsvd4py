@@ -1,0 +1,69 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / py${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ['3.10', '3.11', '3.12', '3.13']
+        include:
+          # oldest supported interpreter; macOS arm64 wheels for 3.9 are spotty
+          - os: ubuntu-latest
+            python-version: '3.9'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package and test deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .[test]
+
+      # macOS resolves to Accelerate; Linux needs an explicit OpenBLAS providing
+      # ?ggsvd3, since scipy's bundled OpenBLAS is not loadable by ctypes.
+      - name: Install scipy-openblas32 (Linux)
+        if: runner.os == 'Linux'
+        run: python -m pip install scipy-openblas32
+
+      - name: Report LAPACK backend
+        run: |
+          python -c "import gsvd4py._lapack as l; l._load_lib(); print('lib_type:', l._lib_type); print('lib:', l._lib)"
+
+      - name: Run test suite
+        run: python -m pytest tests/ -v
+
+  # Informational: does discovery work with nothing but scipy installed?
+  # Allowed to fail — it documents the pip-only Linux path, it does not gate CI.
+  linux-scipy-only:
+    name: ubuntu / scipy only (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          python -m pip install --upgrade pip
+          python -m pip install .[test]
+      - name: Report LAPACK backend
+        run: |
+          python -c "import gsvd4py._lapack as l; l._load_lib(); print('lib_type:', l._lib_type); print('lib:', l._lib)"
+      - run: python -m pytest tests/ -v
