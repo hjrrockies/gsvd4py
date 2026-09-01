@@ -11,7 +11,12 @@ A lightweight Python wrapper for the LAPACK `?ggsvd3` routines, providing the Ge
 pip install gsvd4py
 ```
 
-Requires SciPy >= 1.13 and NumPy >= 2.0.
+Requires Python >= 3.9, SciPy >= 1.7.3 and NumPy >= 1.19.5. Tested on Linux,
+macOS and Windows across Python 3.9-3.13; the oldest supported versions are
+pinned and exercised by CI, so the requirements above are what is actually
+verified rather than a guess.
+
+SciPy is needed only to locate a LAPACK library — no SciPy API is called.
 
 ## Background
 
@@ -143,13 +148,32 @@ Supported dtypes: `float32`, `float64`, `complex64`, `complex128`. Integer input
 
 ## LAPACK backend
 
-`gsvd4py` discovers the LAPACK library at runtime in the following order:
+`gsvd4py` calls LAPACK through `ctypes`, so no compilation is required and no
+LAPACK is bundled — whatever the host already provides is used. The library is
+discovered at import in this order:
 
 1. **Apple Accelerate** (macOS) — via `$NEWLAPACK` symbols
-2. **scipy-openblas** — the OpenBLAS bundle shipped with SciPy
-3. **System LAPACK** — `liblapack` found via `ctypes.util.find_library`
+2. **SciPy's own bundled OpenBLAS** — `scipy.libs/` beside the installed
+   `scipy` package (`scipy/.dylibs/` for macOS wheels). This is what makes
+   "the same LAPACK SciPy uses" true on Linux and Windows.
+3. **`scipy_openblas32` / `scipy_openblas64`** — the standalone packages
+4. **Already-loaded symbols** — `CDLL(None)`, POSIX only
+5. **System LAPACK** — `liblapack`, `libopenblas` or `libflexiblas` found via
+   `ctypes.util.find_library`
 
-No compilation is required.
+Both the `scipy_`-prefixed and plain Fortran symbol spellings are accepted, and
+libraries in a bundle directory are loaded together so that co-located
+dependencies (`libgfortran`, `libquadmath`) can satisfy each other. If every
+candidate fails, the resulting `ImportError` lists each path tried and why it
+was rejected.
+
+You can check what was selected:
+
+```python
+import gsvd4py._lapack as lapack
+lapack._load_lib()
+print(lapack._lib_type, lapack._lib)
+```
 
 ## License
 
