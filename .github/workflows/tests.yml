@@ -42,3 +42,30 @@ jobs:
 
       - name: Run test suite
         run: python -m pytest tests/ -v
+
+  # The floors declared in pyproject.toml, pinned exactly: whatever this job
+  # installs is what the package may advertise. Widen the pins first, watch
+  # them pass, then widen the metadata -- never the other way round.
+  oldest:
+    name: oldest supported versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install package with floor pins
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "numpy==1.19.5" "scipy==1.7.3" pytest
+          python -m pip install --no-deps .
+
+      - name: Report versions and LAPACK backend
+        run: |
+          python -c "import numpy, scipy; print('numpy', numpy.__version__); print('scipy', scipy.__version__)"
+          python -c "import gsvd4py._lapack as l; l._load_lib(); print('lib_type:', l._lib_type); print('lib:', l._lib)"
+
+      - name: Run test suite
+        run: python -m pytest tests/ -v
