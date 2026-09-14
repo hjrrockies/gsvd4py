@@ -2,13 +2,19 @@
 LAPACK library discovery for gsvd4py.
 
 Discovery runs once, on the first call that needs LAPACK (not at import).
-Each strategy below is a named entry in `_STRATEGIES`; by default they are
-tried in this order:
-  1. accelerate        Apple Accelerate (macOS) — symbols ?ggsvd3$NEWLAPACK
-  2. scipy_bundled     SciPy's own bundled OpenBLAS (scipy.libs/, scipy/.dylibs/)
-  3. scipy_openblas32  the standalone scipy_openblas32 package
-  4. process_symbols   CDLL(None) — symbols already loaded (POSIX only)
-  5. find_library      ctypes.util.find_library — system LAPACK / OpenBLAS
+Each strategy below is a named entry in `_STRATEGIES`:
+  accelerate        Apple Accelerate (macOS) — symbols ?ggsvd3$NEWLAPACK
+  scipy_bundled     SciPy's own bundled OpenBLAS (scipy.libs/, scipy/.dylibs/)
+  scipy_openblas32  the standalone scipy_openblas32 package
+  env_prefix        liblapack, libopenblas, ... in sys.prefix (e.g. conda)
+  process_symbols   CDLL(None) — symbols already loaded (POSIX only)
+  find_library      ctypes.util.find_library — system LAPACK / OpenBLAS
+
+The order depends on the LAPACK SciPy itself uses (`_detect_scipy_lapack`):
+  accelerate, or unknown   the order listed above
+  openblas                 SciPy's OpenBLAS first, Accelerate last
+  other (e.g. conda)       the environment's LAPACK first, Accelerate last
+Every order contains every strategy: detection only changes preference.
 
 Strategy 2 is what makes the "same LAPACK as SciPy" promise hold on Linux
 and Windows: the wheels vendor libscipy_openblas next to the scipy package,
@@ -19,9 +25,9 @@ gsvd4py passes 32-bit integers.
 
 The environment variable GSVD4PY_LAPACK pins the provider. It is read once,
 at first use, and accepts:
-  - accelerate       only strategy 1
-  - scipy_openblas   only strategies 2 and 3
-  - system           only strategies 4 and 5
+  - accelerate       only accelerate
+  - scipy_openblas   only scipy_bundled, scipy_openblas32
+  - system           only env_prefix, process_symbols, find_library
   - an absolute path to a shared library exporting ?ggsvd3
 An explicit provider that cannot be loaded raises ImportError; it never
 falls back to another one.
@@ -32,9 +38,11 @@ Calling conventions differ:
                        appended after `info`
 """
 
+import contextlib
 import ctypes
 import ctypes.util
 import glob
+import io
 import os
 import sys
 
@@ -45,7 +53,8 @@ _ENV_VAR = 'GSVD4PY_LAPACK'
 _lib = None
 _lib_type = None     # 'accelerate' | 'scipy_openblas' | 'system'
 _lib_path = None     # path of the loaded library; None for process symbols
-_lib_source = None   # 'override' | 'default'
+_lib_source = None   # 'override' | 'detected' | 'default'
+_scipy_lapack = None # SciPy's provider: 'accelerate' | 'openblas' | 'other'
 
 
 def _shared_lib_pattern():
@@ -224,6 +233,33 @@ def _strategy_scipy_openblas32(attempts):
     return None
 
 
+# Names a Python environment (typically conda) ships LAPACK under, preferred
+# first: conda's liblapack is the switchable one that follows libblas.
+_ENV_PREFIX_NAMES = ('liblapack', 'libopenblas', 'openblas', 'libflexiblas',
+                     'mkl_rt')
+
+
+def _strategy_env_prefix(attempts):
+    """A LAPACK shipped inside the Python environment itself (e.g. conda)."""
+    if sys.platform == 'win32':
+        lib_dir = os.path.join(sys.prefix, 'Library', 'bin')
+    else:
+        lib_dir = os.path.join(sys.prefix, 'lib')
+    pattern = _shared_lib_pattern()
+    paths = [path
+             for name in _ENV_PREFIX_NAMES
+             for path in sorted(glob.glob(os.path.join(lib_dir,
+                                                       name + pattern)))]
+    if not paths:
+        attempts.append(f"{lib_dir}: no LAPACK libraries")
+        return None
+    for path in paths:
+        found = _try_load(path, attempts)
+        if found is not None:
+            return found
+    return None
+
+
 def _strategy_process_symbols(attempts):
     """CDLL(None): LAPACK symbols already loaded into the process (POSIX)."""
     if sys.platform == 'win32':
@@ -252,24 +288,68 @@ _STRATEGIES = {
     'accelerate':       _strategy_accelerate,
     'scipy_bundled':    _strategy_scipy_bundled,
     'scipy_openblas32': _strategy_scipy_openblas32,
+    'env_prefix':       _strategy_env_prefix,
     'process_symbols':  _strategy_process_symbols,
     'find_library':     _strategy_find_library,
 }
 
 _DEFAULT_ORDER = ('accelerate', 'scipy_bundled', 'scipy_openblas32',
-                  'process_symbols', 'find_library')
+                  'env_prefix', 'process_symbols', 'find_library')
+
+# SciPy's detected provider -> probe order; anything absent uses the default.
+# Accelerate stays in every order, last, so detection never makes loading fail.
+_PREFERRED_ORDERS = {
+    'openblas': ('scipy_bundled', 'scipy_openblas32', 'env_prefix',
+                 'process_symbols', 'find_library', 'accelerate'),
+    'other':    ('env_prefix', 'process_symbols', 'find_library',
+                 'scipy_bundled', 'scipy_openblas32', 'accelerate'),
+}
 
 # GSVD4PY_LAPACK provider name -> the only strategies it may use
 _OVERRIDE_GROUPS = {
     'accelerate':     ('accelerate',),
     'scipy_openblas': ('scipy_bundled', 'scipy_openblas32'),
-    'system':         ('process_symbols', 'find_library'),
+    'system':         ('env_prefix', 'process_symbols', 'find_library'),
 }
+
+
+def _detect_scipy_lapack():
+    """Return the LAPACK provider SciPy uses, as far as can be told.
+
+    'openblas'    the SciPy wheel vendors an OpenBLAS (any SciPy version), or
+                  SciPy's build configuration names one
+    'accelerate'  SciPy's build configuration names Accelerate (SciPy 1.11+)
+    'other'       the configuration names something else -- e.g. conda-forge's
+                  generic 'lapack', whose real provider is picked at install
+    None          SciPy is missing, or there is no way to tell
+    """
+    try:
+        for lib_dir in _scipy_bundled_lib_dirs():
+            # Accelerate wheels vendor the Fortran runtime here too, so look
+            # for OpenBLAS by name rather than for any library at all.
+            pattern = os.path.join(lib_dir, '*openblas' + _shared_lib_pattern())
+            if glob.glob(pattern):
+                return 'openblas'
+
+        import scipy
+        # show_config(mode='dicts') exists from SciPy 1.11; older versions
+        # raise TypeError here. Silence stdout in case a version prints.
+        with contextlib.redirect_stdout(io.StringIO()):
+            config = scipy.show_config(mode='dicts')
+        name = config['Build Dependencies']['lapack']['name'].lower()
+    except Exception:
+        return None
+
+    if 'accelerate' in name:
+        return 'accelerate'
+    if 'openblas' in name:
+        return 'openblas'
+    return 'other'
 
 
 def _probe_order(preferred=None):
     """Strategy names to try, in order, given SciPy's detected provider."""
-    return list(_DEFAULT_ORDER)
+    return list(_PREFERRED_ORDERS.get(preferred, _DEFAULT_ORDER))
 
 
 def _read_override():
@@ -284,16 +364,21 @@ def _raise_not_found(attempts, headline):
 
 
 def _load_lib():
-    global _lib, _lib_type, _lib_path, _lib_source
+    global _lib, _lib_type, _lib_path, _lib_source, _scipy_lapack
 
     if _lib is not None:
         return
 
     attempts = []   # notes on each rejected candidate, for the error message
     override = _read_override()
+    try:
+        _scipy_lapack = _detect_scipy_lapack()
+    except Exception:   # detection must never break loading
+        _scipy_lapack = None
 
     if override is None:
-        names, source = _probe_order(), 'default'
+        names = _probe_order(_scipy_lapack)
+        source = 'default' if _scipy_lapack is None else 'detected'
     elif override.lower() in _OVERRIDE_GROUPS:
         names, source = _OVERRIDE_GROUPS[override.lower()], 'override'
     elif os.path.isabs(override):
@@ -347,14 +432,17 @@ def lapack_info():
             Path of the loaded library, or None when the symbols were found
             among those already loaded into the process.
         ``source``
-            ``'override'`` if chosen via GSVD4PY_LAPACK, else ``'default'``.
+            ``'override'`` if chosen via GSVD4PY_LAPACK, ``'detected'`` if
+            the probe order followed SciPy's detected provider, else
+            ``'default'``.
         ``hidden_lengths``
             True when the gfortran hidden character-length arguments are
             passed.
         ``int_width``
             Width in bits of LAPACK integer arguments (always 32).
         ``scipy_lapack``
-            The LAPACK provider SciPy reports, if detected, else None.
+            The LAPACK provider SciPy uses -- ``'accelerate'``,
+            ``'openblas'`` or ``'other'`` -- or None if it can't be told.
 
     Raises
     ------
@@ -368,7 +456,7 @@ def lapack_info():
         'source': _lib_source,
         'hidden_lengths': _lib_type != 'accelerate',
         'int_width': 32,
-        'scipy_lapack': None,
+        'scipy_lapack': _scipy_lapack,
     }
 
 
