@@ -1,8 +1,7 @@
 """
 Tests for gsvd4py.
 
-Validates:
-  - LAPACK library is found and loaded
+Validates (LAPACK discovery itself is covered in test_lapack.py):
   - Reconstruction accuracy: A ≈ U @ C @ X.conj().T,  B ≈ V @ S @ X.conj().T
   - Unitarity of U and V
   - All modes (full, econ, separate)
@@ -20,7 +19,6 @@ from numpy.testing import assert_allclose
 
 import gsvd4py
 from gsvd4py import gsvd, gsvdvals
-import gsvd4py._lapack as _lapack_mod
 
 
 # ---------------------------------------------------------------------------
@@ -55,20 +53,6 @@ class TestVersion:
         except PackageNotFoundError:
             pytest.skip('gsvd4py is not installed in this environment')
         assert installed == gsvd4py.__version__
-
-
-# ---------------------------------------------------------------------------
-# Test: library loading
-# ---------------------------------------------------------------------------
-
-class TestLibraryLoading:
-    def test_loads_without_error(self):
-        _lapack_mod._load_lib()
-        assert _lapack_mod._lib_type in ('accelerate', 'scipy_openblas', 'system')
-
-    def test_lib_type_is_string(self):
-        _lapack_mod._load_lib()
-        assert isinstance(_lapack_mod._lib_type, str)
 
 
 # ---------------------------------------------------------------------------

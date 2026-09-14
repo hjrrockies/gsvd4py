@@ -38,7 +38,7 @@ jobs:
           python -m pip install .[test]
 
       - name: Report LAPACK backend
-        run: python -c "import gsvd4py._lapack as l; l._load_lib(); print('lib_type:', l._lib_type); print('lib:', l._lib)"
+        run: python -c "import gsvd4py; print(gsvd4py.lapack_info())"
 
       - name: Run test suite
         run: python -m pytest tests/ -v
@@ -65,7 +65,7 @@ jobs:
       - name: Report versions and LAPACK backend
         run: |
           python -c "import numpy, scipy; print('numpy', numpy.__version__); print('scipy', scipy.__version__)"
-          python -c "import gsvd4py._lapack as l; l._load_lib(); print('lib_type:', l._lib_type); print('lib:', l._lib)"
+          python -c "import gsvd4py; print(gsvd4py.lapack_info())"
 
       - name: Run test suite
         run: python -m pytest tests/ -v
