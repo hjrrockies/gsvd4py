@@ -23,6 +23,10 @@ jobs:
           # oldest supported interpreter; macOS arm64 wheels for 3.9 are spotty
           - os: ubuntu-latest
             python-version: '3.9'
+          # a second LAPACK beside Accelerate, so the cross-provider test runs
+          - os: macos-latest
+            python-version: '3.13'
+            extra: scipy-openblas32
 
     steps:
       - uses: actions/checkout@v4
@@ -36,6 +40,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install .[test]
+
+      - name: Install extra LAPACK provider
+        if: matrix.extra
+        run: python -m pip install ${{ matrix.extra }}
 
       - name: Report LAPACK backend
         run: python -c "import gsvd4py; print(gsvd4py.lapack_info())"
@@ -66,6 +74,11 @@ jobs:
         run: |
           python -c "import numpy, scipy; print('numpy', numpy.__version__); print('scipy', scipy.__version__)"
           python -c "import gsvd4py; print(gsvd4py.lapack_info())"
+
+      # SciPy 1.7.3 has no show_config(mode='dicts'): detection must come from
+      # the OpenBLAS its wheel vendors.
+      - name: Check SciPy's OpenBLAS is detected
+        run: python -c "import gsvd4py; i = gsvd4py.lapack_info(); assert i['scipy_lapack'] == 'openblas' and i['source'] == 'detected', i"
 
       - name: Run test suite
         run: python -m pytest tests/ -v

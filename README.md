@@ -150,16 +150,36 @@ Supported dtypes: `float32`, `float64`, `complex64`, `complex128`. Integer input
 
 `gsvd4py` calls LAPACK through `ctypes`, so no compilation is required and no
 LAPACK is bundled — whatever the host already provides is used. The library is
-discovered at import in this order:
+located once, on the first call to `gsvd` or `gsvdvals`.
 
-1. **Apple Accelerate** (macOS) — via `$NEWLAPACK` symbols
-2. **SciPy's own bundled OpenBLAS** — `scipy.libs/` beside the installed
-   `scipy` package (`scipy/.dylibs/` for macOS wheels). This is what makes
-   "the same LAPACK SciPy uses" true on Linux and Windows.
-3. **`scipy_openblas32` / `scipy_openblas64`** — the standalone packages
-4. **Already-loaded symbols** — `CDLL(None)`, POSIX only
-5. **System LAPACK** — `liblapack`, `libopenblas` or `libflexiblas` found via
-   `ctypes.util.find_library`
+### Discovery
+
+gsvd4py first works out which LAPACK SciPy itself uses:
+
+- **OpenBLAS** — the SciPy wheel vendors one (`scipy.libs/`, or
+  `scipy/.dylibs/` on macOS), or SciPy's build configuration names it;
+- **Accelerate** — SciPy's build configuration names it (SciPy 1.11+);
+- **other** — the configuration names something else, e.g. conda-forge's
+  generic `lapack`, whose real provider is chosen at install time.
+
+It then tries these sources in the order matching that answer:
+
+| Source | Accelerate or unknown | OpenBLAS | other |
+|---|---|---|---|
+| Apple Accelerate (macOS, `$NEWLAPACK` symbols) | 1 | 6 | 6 |
+| SciPy's bundled OpenBLAS | 2 | 1 | 4 |
+| `scipy_openblas32` package | 3 | 2 | 5 |
+| The environment's own LAPACK (`sys.prefix/lib`, or `Library\bin` on Windows) | 4 | 3 | 1 |
+| Already-loaded symbols (`CDLL(None)`, POSIX only) | 5 | 4 | 2 |
+| System LAPACK via `ctypes.util.find_library` | 6 | 5 | 3 |
+
+So pip SciPy on macOS 14+ keeps using Accelerate, while a SciPy built against
+OpenBLAS — on any platform — makes gsvd4py use OpenBLAS as well. Detection only
+changes the order: if the preferred library can't be loaded, the others are
+still tried.
+
+`scipy_openblas64` is never used: it is an ILP64 build, and gsvd4py passes
+32-bit integers.
 
 Both the `scipy_`-prefixed and plain Fortran symbol spellings are accepted, and
 libraries in a bundle directory are loaded together so that co-located
@@ -167,13 +187,38 @@ dependencies (`libgfortran`, `libquadmath`) can satisfy each other. If every
 candidate fails, the resulting `ImportError` lists each path tried and why it
 was rejected.
 
-You can check what was selected:
+### Choosing a provider
+
+Set `GSVD4PY_LAPACK` to pin the provider instead:
+
+| Value | Sources tried |
+|---|---|
+| `accelerate` | Apple Accelerate |
+| `scipy_openblas` | SciPy's bundled OpenBLAS, then `scipy_openblas32` |
+| `system` | The environment's LAPACK, already-loaded symbols, `find_library` |
+| an absolute path | exactly that shared library |
+
+```bash
+GSVD4PY_LAPACK=scipy_openblas python my_script.py
+```
+
+The variable is read once, at the first call into gsvd4py, so set it before
+then. An explicitly requested provider that can't be loaded raises
+`ImportError` rather than falling back to another one.
+
+### Reporting the backend
 
 ```python
-import gsvd4py._lapack as lapack
-lapack._load_lib()
-print(lapack._lib_type, lapack._lib)
+import gsvd4py
+print(gsvd4py.lapack_info())
+# {'lib_type': 'accelerate', 'path': '/System/Library/Frameworks/Accelerate.framework/Accelerate',
+#  'source': 'detected', 'hidden_lengths': False, 'int_width': 32, 'scipy_lapack': 'accelerate'}
 ```
+
+`lib_type` is the calling convention in use (`accelerate`, `scipy_openblas` or
+`system`), `source` says whether it came from `GSVD4PY_LAPACK`, from SciPy
+detection, or from the default order, and `scipy_lapack` is what was detected.
+Please include this output in bug reports.
 
 ## License
 
